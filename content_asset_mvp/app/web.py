@@ -25,6 +25,7 @@ from .publish_adapter import dry_run_publish_task, dry_run_ready_publish_tasks, 
 from .publish_board import (
     METRIC_KEYS,
     PRIORITIES,
+    SNAPSHOT_LABELS,
     STATUSES,
     filter_and_sort_publish_tasks,
     generate_publish_tasks_all,
@@ -1038,6 +1039,10 @@ class WebHandler(BaseHTTPRequestHandler):
   {_feedback_tasks_html(report.get("best_tasks", []))}
 </div>
 <div class="card">
+  <h2>时间窗口汇总</h2>
+  {_feedback_time_windows_html(report.get("time_window_summary", []))}
+</div>
+<div class="card">
   <h2>弱表现任务</h2>
   {_feedback_tasks_html(report.get("weak_tasks", []))}
 </div>
@@ -1233,23 +1238,33 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _publish_task(self, form: dict[str, list[str]]) -> None:
         task_id = _form_value(form, "task_id")
-        status = _form_value(form, "status", "pending_review")
-        priority = _form_value(form, "priority", "normal")
-        if status not in STATUSES:
+        status = _form_value(form, "status", "")
+        priority = _form_value(form, "priority", "")
+        if status and status not in STATUSES:
             raise ValueError("Invalid publish task status")
-        if priority not in PRIORITIES:
+        if priority and priority not in PRIORITIES:
             raise ValueError("Invalid publish task priority")
         metrics = {key: _form_metric(form, key) for key in METRIC_KEYS}
-        updates = {
-            "status": status,
-            "priority": priority,
-            "scheduled_at": _form_value(form, "scheduled_at", ""),
-            "account": _form_value(form, "account", ""),
-            "publish_url": _form_value(form, "publish_url", ""),
-            "published_at": _form_value(form, "published_at", ""),
-            "metrics": metrics,
-            "note": _form_value(form, "note", ""),
-        }
+        updates: dict[str, Any] = {}
+        if "status" in form:
+            updates["status"] = status
+        if "priority" in form:
+            updates["priority"] = priority
+        for key in ["scheduled_at", "account", "publish_url", "published_at", "note"]:
+            if key in form:
+                updates[key] = _form_value(form, key, "")
+        if "metric_snapshot_label" in form:
+            label = _form_value(form, "metric_snapshot_label", "custom")
+            if label not in SNAPSHOT_LABELS:
+                raise ValueError("Invalid metric snapshot label")
+            updates["metric_snapshot"] = {
+                "label": label,
+                "captured_at": _form_value(form, "metric_snapshot_captured_at", ""),
+                "metrics": metrics,
+                "note": _form_value(form, "metric_snapshot_note", ""),
+            }
+        elif any(key in form for key in METRIC_KEYS):
+            updates["metrics"] = metrics
         update_publish_task(self.server.output_dir, task_id, updates)
         self._redirect("/publish-board")
 
@@ -1414,8 +1429,62 @@ def _metric_input_html(key: str, value: Any) -> str:
     <input type="number" min="0"{step} name="{_escape(key)}" value="{_escape(value)}">"""
 
 
+def _task_latest_metrics(task: dict[str, Any]) -> dict[str, Any]:
+    metrics = task.get("metrics_latest") if isinstance(task.get("metrics_latest"), dict) else task.get("metrics")
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def _task_metric_snapshots(task: dict[str, Any]) -> list[dict[str, Any]]:
+    snapshots = task.get("metric_snapshots")
+    if not isinstance(snapshots, list):
+        return []
+    return [snapshot for snapshot in snapshots if isinstance(snapshot, dict)]
+
+
+def _metric_snapshot_summary_html(task: dict[str, Any]) -> str:
+    snapshots = _task_metric_snapshots(task)
+    if not snapshots:
+        return "<p class='muted'>发布数据快照：暂无。可录入首小时、24小时或7天表现。</p>"
+    latest = snapshots[-1]
+    metrics = latest.get("metrics") if isinstance(latest.get("metrics"), dict) else {}
+    summary = " · ".join(f"{key}: {metrics.get(key, 0)}" for key in METRIC_KEYS if metrics.get(key, 0)) or "全部指标为 0"
+    return (
+        "<p>"
+        f"<strong>发布数据快照：</strong>{_escape(len(snapshots))} 个 · "
+        f"最近 {_escape(latest.get('label', 'custom'))} · {_escape(latest.get('captured_at', '-'))} · "
+        f"{_escape(summary)}"
+        "</p>"
+    )
+
+
+def _metric_snapshot_form_html(task: dict[str, Any], metrics: dict[str, Any]) -> str:
+    label_options = "".join(_select_option(label, label, "latest") for label in SNAPSHOT_LABELS)
+    metric_inputs = "".join(_metric_input_html(key, metrics.get(key, 0)) for key in METRIC_KEYS)
+    return f"""<div class="platform-summary">
+    <h3>发布数据快照</h3>
+    <p class="muted">用于记录首小时、24小时、7天或最新表现；保存后会同步 metrics_latest 和兼容旧逻辑的 metrics。</p>
+    <form method="post" action="/publish-task">
+      <input type="hidden" name="task_id" value="{_escape(task.get("task_id"))}">
+      <div class="grid">
+        <div>
+          <label>snapshot label</label>
+          <select name="metric_snapshot_label">{label_options}</select>
+        </div>
+        <div>
+          <label>captured_at</label>
+          <input type="text" name="metric_snapshot_captured_at" placeholder="留空则使用当前 UTC 时间">
+        </div>
+        {metric_inputs}
+      </div>
+      <label>snapshot note</label>
+      <textarea name="metric_snapshot_note" placeholder="例如：首小时自然流量、投放后24小时、7天复盘">{_escape(task.get("note", ""))}</textarea>
+      <button type="submit">保存发布数据快照</button>
+    </form>
+  </div>"""
+
+
 def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | None = None) -> str:
-    metrics = task.get("metrics") if isinstance(task.get("metrics"), dict) else {}
+    metrics = _task_latest_metrics(task)
     risks = task.get("manual_review_risks") if isinstance(task.get("manual_review_risks"), list) else []
     risks_html = "".join(f"<li>{_escape(item)}</li>" for item in risks if str(item).strip())
     metrics_summary = " · ".join(f"{key}: {metrics.get(key, 0)}" for key in METRIC_KEYS)
@@ -1427,7 +1496,8 @@ def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | No
     )
     status_options = "".join(_select_option(status, status, str(task.get("status") or "pending_review")) for status in STATUSES)
     priority_options = "".join(_select_option(priority, priority, str(task.get("priority") or "normal")) for priority in PRIORITIES)
-    metric_inputs = "".join(_metric_input_html(key, metrics.get(key, 0)) for key in METRIC_KEYS)
+    snapshot_summary_html = _metric_snapshot_summary_html(task)
+    snapshot_form_html = _metric_snapshot_form_html(task, metrics)
     if latest_attempt:
         attempt_status = latest_attempt.get("status", "-")
         attempt_at = latest_attempt.get("created_at", "-")
@@ -1453,6 +1523,7 @@ def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | No
   <p class="muted">{_escape(task.get("content_id"))} · {_escape(task.get("task_id"))}</p>
   <p><strong>排期：</strong>{_escape(task.get("scheduled_at") or "未排期")} · <strong>账号：</strong>{_escape(task.get("account") or "未填写")} · {publish_link}</p>
   <p><strong>关键指标：</strong>{_escape(metrics_summary)}</p>
+  {snapshot_summary_html}
   {latest_attempt_html}
   <form method="post" action="/publish-dry-run">
     <input type="hidden" name="task_id" value="{_escape(task.get("task_id"))}">
@@ -1487,12 +1558,12 @@ def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | No
         <label>published_at</label>
         <input type="text" name="published_at" placeholder="2026-05-02 21:00" value="{_escape(task.get("published_at", ""))}">
       </div>
-      {metric_inputs}
     </div>
     <label>note</label>
     <textarea name="note">{_escape(task.get("note", ""))}</textarea>
     <button type="submit">保存任务</button>
   </form>
+  {snapshot_form_html}
 </div>"""
 
 
@@ -1534,15 +1605,39 @@ def _feedback_tasks_html(tasks: Any) -> str:
         if not isinstance(task, dict):
             continue
         breakdown = task.get("score_breakdown") if isinstance(task.get("score_breakdown"), dict) else {}
+        metric_source = task.get("metric_source") if isinstance(task.get("metric_source"), dict) else {}
         proxy = "有代理指标" if breakdown.get("proxy_used") else "直接指标"
+        source_label = metric_source.get("label") or metric_source.get("type") or "legacy"
+        captured_at = metric_source.get("captured_at") or ""
+        captured_html = f"<p class='muted'>captured_at: {_escape(captured_at)}</p>" if captured_at else ""
         cards.append(
             "<div class='item'>"
             f"<strong>{_escape(task.get('title') or task.get('content_id') or '-')}</strong>"
             f"<p><span class='pill'>{_escape(task.get('platform_name', task.get('platform', '-')))}</span>"
             f"<span class='pill'>评分: {_escape(task.get('performance_score', 0))}</span>"
-            f"<span class='pill'>{_escape(proxy)}</span></p>"
+            f"<span class='pill'>{_escape(proxy)}</span>"
+            f"<span class='pill'>snapshot: {_escape(source_label)}</span></p>"
             f"<p class='muted'>{_escape(task.get('task_id', '-'))}</p>"
+            f"{captured_html}"
             f"<p>{_escape(breakdown.get('summary', ''))}</p>"
+            "</div>"
+        )
+    return f"<div class='grid'>{''.join(cards)}</div>"
+
+
+def _feedback_time_windows_html(items: Any) -> str:
+    if not isinstance(items, list) or not items:
+        return "<p class='muted'>暂无 1h/24h/7d 快照汇总。</p>"
+    cards = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        cards.append(
+            "<div class='item'>"
+            f"<strong>{_escape(item.get('label', '-'))}</strong>"
+            f"<p><span class='pill'>平均分: {_escape(item.get('average_score', 0))}</span>"
+            f"<span class='pill'>任务数: {_escape(item.get('task_count', 0))}</span></p>"
+            f"<p class='muted'>最近采集：{_escape(item.get('latest_captured_at', '-'))}</p>"
             "</div>"
         )
     return f"<div class='grid'>{''.join(cards)}</div>"

@@ -20,6 +20,7 @@ EXTENDED_METRIC_KEYS = [
     "search_hits",
 ]
 FEEDBACK_METRIC_KEYS = BASE_METRIC_KEYS + EXTENDED_METRIC_KEYS
+TIME_WINDOW_LABELS = ["1h", "24h", "7d"]
 
 PLATFORM_SCORE_RULES: dict[str, list[dict[str, Any]]] = {
     "douyin": [
@@ -85,6 +86,7 @@ def analyze_feedback(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         "best_platforms": platform_scores[:3],
         "best_tasks": sorted(data_task_scores, key=lambda item: item["performance_score"], reverse=True)[:5],
         "weak_tasks": _weak_tasks(data_task_scores),
+        "time_window_summary": _time_window_summary(tasks),
         "content_insights": _content_insights(data_task_scores),
         "platform_insights": _platform_insights(platform_scores),
         "source_weight_suggestions": _source_weight_suggestions(data_task_scores),
@@ -94,10 +96,10 @@ def analyze_feedback(tasks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def score_publish_task(task: dict[str, Any]) -> dict[str, Any]:
     platform = str(task.get("platform") or "")
-    metrics = normalize_metrics(task.get("metrics"))
+    metric_source = _metric_source_for_task(task)
+    metrics = normalize_metrics(metric_source.get("metrics"))
     rules = PLATFORM_SCORE_RULES.get(platform, [])
-    components = [_score_component(rule, metrics) for rule in rules]
-    performance_score = round(sum(component["weighted_score"] for component in components), 2)
+    performance_score, components = _score_metrics(platform, metrics)
     has_metrics = any(metrics.get(key, 0) > 0 for key in FEEDBACK_METRIC_KEYS)
     return {
         "task_id": str(task.get("task_id") or ""),
@@ -107,6 +109,7 @@ def score_publish_task(task: dict[str, Any]) -> dict[str, Any]:
         "platform_name": str(task.get("platform_name") or PLATFORMS.get(platform, {}).get("platform_name", platform)),
         "status": str(task.get("status") or ""),
         "metrics": metrics,
+        "metric_source": metric_source,
         "has_metrics": has_metrics,
         "performance_score": performance_score if has_metrics else 0.0,
         "score_breakdown": {
@@ -117,12 +120,46 @@ def score_publish_task(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _metric_source_for_task(task: dict[str, Any]) -> dict[str, Any]:
+    snapshots = _snapshot_candidates_for_task(task)
+    if snapshots:
+        latest_snapshot = snapshots[-1]
+        return {
+            "type": "snapshot",
+            "label": str(latest_snapshot.get("label") or "custom"),
+            "captured_at": str(latest_snapshot.get("captured_at") or ""),
+            "metrics": latest_snapshot.get("metrics"),
+        }
+    metrics_latest = normalize_metrics(task.get("metrics_latest"))
+    legacy_metrics = normalize_metrics(task.get("metrics"))
+    if isinstance(task.get("metrics_latest"), dict) and (_has_metric_data(metrics_latest) or not _has_metric_data(legacy_metrics)):
+        return {"type": "metrics_latest", "label": "latest", "captured_at": "", "metrics": task.get("metrics_latest")}
+    return {"type": "metrics", "label": "legacy", "captured_at": "", "metrics": task.get("metrics")}
+
+
+def _snapshot_candidates_for_task(task: dict[str, Any]) -> list[dict[str, Any]]:
+    snapshots = task.get("metric_snapshots")
+    if not isinstance(snapshots, list):
+        return []
+    return [snapshot for snapshot in snapshots if isinstance(snapshot, dict)]
+
+
+def _score_metrics(platform: str, metrics: dict[str, float]) -> tuple[float, list[dict[str, Any]]]:
+    rules = PLATFORM_SCORE_RULES.get(platform, [])
+    components = [_score_component(rule, metrics) for rule in rules]
+    return round(sum(component["weighted_score"] for component in components), 2), components
+
+
 def normalize_metrics(value: Any) -> dict[str, float]:
     source = value if isinstance(value, dict) else {}
     metrics: dict[str, float] = {}
     for key in FEEDBACK_METRIC_KEYS:
         metrics[key] = _metric_value(source.get(key), rate=key == "completion_rate")
     return metrics
+
+
+def _has_metric_data(metrics: dict[str, float]) -> bool:
+    return any(metrics.get(key, 0) > 0 for key in FEEDBACK_METRIC_KEYS)
 
 
 def _score_component(rule: dict[str, Any], metrics: dict[str, float]) -> dict[str, Any]:
@@ -191,6 +228,39 @@ def _platform_scores(task_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return sorted(scores, key=lambda item: item["average_score"], reverse=True)
+
+
+def _time_window_summary(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[float]] = defaultdict(list)
+    latest_captured_at: dict[str, str] = {}
+    for task in tasks:
+        platform = str(task.get("platform") or "")
+        for snapshot in _snapshot_candidates_for_task(task):
+            label = str(snapshot.get("label") or "")
+            if label not in TIME_WINDOW_LABELS:
+                continue
+            metrics = normalize_metrics(snapshot.get("metrics"))
+            if not any(metrics.get(key, 0) > 0 for key in FEEDBACK_METRIC_KEYS):
+                continue
+            score, _ = _score_metrics(platform, metrics)
+            grouped[label].append(score)
+            captured_at = str(snapshot.get("captured_at") or "")
+            if captured_at > latest_captured_at.get(label, ""):
+                latest_captured_at[label] = captured_at
+    summary = []
+    for label in TIME_WINDOW_LABELS:
+        scores = grouped.get(label, [])
+        if not scores:
+            continue
+        summary.append(
+            {
+                "label": label,
+                "task_count": len(scores),
+                "average_score": round(sum(scores) / len(scores), 2),
+                "latest_captured_at": latest_captured_at.get(label, ""),
+            }
+        )
+    return summary
 
 
 def _weak_tasks(task_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:

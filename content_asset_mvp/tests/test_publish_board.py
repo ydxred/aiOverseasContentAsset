@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 from app.main import main
 from app.platform_publish import PLATFORMS, generate_platform_publish_package
-from app.publish_board import filter_and_sort_publish_tasks, generate_publish_tasks, load_publish_tasks
+from app.publish_board import filter_and_sort_publish_tasks, generate_publish_tasks, load_publish_tasks, update_publish_task
 from app.web import build_server
 
 
@@ -29,6 +29,8 @@ def test_generate_publish_tasks_writes_one_task_per_platform(tmp_path: Path) -> 
     assert first["metrics"]["likes"] == 0
     assert first["metrics"]["completion_rate"] == 0.0
     assert first["metrics"]["coins"] == 0
+    assert first["metrics_latest"]["views"] == 0
+    assert first["metric_snapshots"] == []
     assert first["title"]
     assert first["manual_review_risks"]
 
@@ -47,6 +49,15 @@ def test_generate_publish_tasks_preserves_manual_fields(tmp_path: Path) -> None:
             "publish_url": "https://example.com/post",
             "published_at": "2026-05-02 21:00",
             "metrics": {"views": 123, "likes": 4, "comments": 3, "favorites": 2, "shares": 1},
+            "metrics_latest": {"views": 456, "likes": 40, "comments": 30, "favorites": 20, "shares": 10},
+            "metric_snapshots": [
+                {
+                    "label": "1h",
+                    "captured_at": "2026-05-02T01:00:00Z",
+                    "metrics": {"views": 456, "likes": 40, "comments": 30, "favorites": 20, "shares": 10},
+                    "note": "首小时",
+                }
+            ],
             "note": "人工已排期",
         }
     )
@@ -61,8 +72,60 @@ def test_generate_publish_tasks_preserves_manual_fields(tmp_path: Path) -> None:
     assert preserved["account"] == "main-account"
     assert preserved["publish_url"] == "https://example.com/post"
     assert preserved["published_at"] == "2026-05-02 21:00"
-    assert preserved["metrics"]["views"] == 123
+    assert preserved["metrics"]["views"] == 456
+    assert preserved["metrics_latest"]["views"] == 456
+    assert preserved["metric_snapshots"][0]["label"] == "1h"
     assert preserved["note"] == "人工已排期"
+
+
+def test_update_publish_task_appends_metric_snapshot_and_syncs_latest(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    package_dir = _write_package(output_dir, "demo")
+    generate_platform_publish_package("demo", package_dir)
+    generate_publish_tasks("demo", package_dir)
+
+    task = update_publish_task(
+        output_dir,
+        "demo__douyin",
+        {
+            "metric_snapshot": {
+                "label": "1h",
+                "captured_at": "2026-05-02T01:00:00Z",
+                "metrics": {"views": "100", "likes": "10", "comments": "2", "completion_rate": "0.5"},
+                "note": "首小时",
+            }
+        },
+    )
+    task = update_publish_task(
+        output_dir,
+        "demo__douyin",
+        {
+            "metric_snapshot": {
+                "label": "24h",
+                "captured_at": "2026-05-03T00:00:00Z",
+                "metrics": {"views": "500", "likes": "60", "comments": "12", "shares": "6", "completion_rate": "0.68"},
+                "note": "24小时",
+            }
+        },
+    )
+
+    assert [snapshot["label"] for snapshot in task["metric_snapshots"]] == ["1h", "24h"]
+    assert task["metrics_latest"]["views"] == 500
+    assert task["metrics"]["views"] == 500
+    assert task["metric_snapshots"][-1]["note"] == "24小时"
+
+
+def test_update_publish_task_legacy_metrics_still_sync_latest(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    package_dir = _write_package(output_dir, "demo")
+    generate_platform_publish_package("demo", package_dir)
+    generate_publish_tasks("demo", package_dir)
+
+    task = update_publish_task(output_dir, "demo__douyin", {"metrics": {"views": 321, "likes": 12}})
+
+    assert task["metrics"]["views"] == 321
+    assert task["metrics_latest"]["views"] == 321
+    assert task["metric_snapshots"] == []
 
 
 def test_filter_and_sort_publish_tasks_prioritizes_actionable_items() -> None:
@@ -123,6 +186,13 @@ def test_web_publish_board_renders_and_updates_task(tmp_path: Path) -> None:
         assert "运营优先级" in html
         assert "应用排序/筛选" in html
         assert "保存任务" in html
+        assert "发布数据快照" in html
+        assert "metric_snapshot_label" in html
+        assert "metric_snapshot_captured_at" in html
+        assert "metric_snapshot_note" in html
+        assert "<option value='1h'" in html
+        assert "<option value='24h'" in html
+        assert "<option value='7d'" in html
         assert "douyin" in html
         assert "抖音" in html
         assert "快手" in html
@@ -163,6 +233,34 @@ def test_web_publish_board_renders_and_updates_task(tmp_path: Path) -> None:
         assert tasks["demo__douyin"]["metrics"]["views"] == 100
         assert "scheduled" in updated_html
         assert "douyin-main" in updated_html
+
+        snapshot_payload = urlencode(
+            {
+                "task_id": "demo__douyin",
+                "metric_snapshot_label": "24h",
+                "metric_snapshot_captured_at": "2026-05-03T00:00:00Z",
+                "views": "1000",
+                "likes": "120",
+                "comments": "20",
+                "favorites": "30",
+                "shares": "12",
+                "completion_rate": "0.75",
+                "followers": "6",
+                "private_messages": "2",
+                "coins": "0",
+                "search_hits": "30",
+                "metric_snapshot_note": "24小时表现",
+            }
+        ).encode("utf-8")
+        request = Request(f"http://{host}:{port}/publish-task", data=snapshot_payload, method="POST")
+        with urlopen(request, timeout=5) as response:
+            snapshot_html = response.read().decode("utf-8")
+        tasks = {task["task_id"]: task for task in load_publish_tasks(package_dir)}
+        assert tasks["demo__douyin"]["metric_snapshots"][-1]["label"] == "24h"
+        assert tasks["demo__douyin"]["metrics_latest"]["views"] == 1000
+        assert tasks["demo__douyin"]["metrics"]["views"] == 1000
+        assert "24h" in snapshot_html
+        assert "1 个" in snapshot_html
     finally:
         server.shutdown()
         server.server_close()

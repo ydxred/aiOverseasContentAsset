@@ -10,10 +10,23 @@ from .platform_publish import PLATFORMS
 
 STATUSES = ["pending_review", "ready", "needs_revision", "scheduled", "published", "rejected", "not_suitable"]
 PRIORITIES = ["low", "normal", "high", "urgent"]
+SNAPSHOT_LABELS = ["1h", "24h", "7d", "latest", "custom"]
 BASE_METRIC_KEYS = ["views", "likes", "comments", "favorites", "shares"]
 EXTENDED_METRIC_KEYS = ["completion_rate", "followers", "private_messages", "coins", "search_hits"]
 METRIC_KEYS = BASE_METRIC_KEYS + EXTENDED_METRIC_KEYS
-MANUAL_FIELDS = {"status", "priority", "scheduled_at", "account", "publish_url", "published_at", "metrics", "note"}
+MANUAL_FIELDS = {
+    "status",
+    "priority",
+    "scheduled_at",
+    "account",
+    "publish_url",
+    "published_at",
+    "metrics",
+    "metrics_latest",
+    "metric_snapshot",
+    "metric_snapshots",
+    "note",
+}
 ATTEMPT_FIELDS = {"last_attempt_id", "last_attempt_status", "last_attempt_at", "last_attempt_mode"}
 STATUS_SORT_RANK = {
     "ready": 0,
@@ -57,7 +70,9 @@ def generate_publish_tasks(content_id: str, package_dir: Path) -> list[dict[str,
             "account": previous.get("account") or "",
             "publish_url": previous.get("publish_url") or "",
             "published_at": previous.get("published_at") or "",
-            "metrics": _normalize_metrics(previous.get("metrics")),
+            "metrics": _latest_metrics_for_task(previous),
+            "metrics_latest": _latest_metrics_for_task(previous),
+            "metric_snapshots": _normalize_metric_snapshots(previous.get("metric_snapshots")),
             "note": previous.get("note") or "",
             "last_attempt_id": previous.get("last_attempt_id") or "",
             "last_attempt_status": previous.get("last_attempt_status") or "",
@@ -133,10 +148,28 @@ def update_publish_task(output_dir: Path, task_id: str, updates: dict[str, Any])
                 if key == "metrics":
                     metrics = _normalize_metrics(task.get("metrics"))
                     metrics.update(_normalize_metric_updates(value))
-                    task[key] = metrics
+                    task["metrics"] = metrics
+                    task["metrics_latest"] = metrics
+                elif key == "metrics_latest":
+                    metrics = _normalize_metrics(value)
+                    task["metrics_latest"] = metrics
+                    task["metrics"] = metrics
+                elif key == "metric_snapshot":
+                    snapshot = _normalize_metric_snapshot(value)
+                    task.setdefault("metric_snapshots", [])
+                    if isinstance(task["metric_snapshots"], list):
+                        task["metric_snapshots"].append(snapshot)
+                    _sync_latest_metrics_from_snapshot(task, snapshot)
+                elif key == "metric_snapshots":
+                    snapshots = _normalize_metric_snapshots(value)
+                    task["metric_snapshots"] = _normalize_metric_snapshots(task.get("metric_snapshots")) + snapshots
+                    if snapshots:
+                        _sync_latest_metrics_from_snapshot(task, snapshots[-1])
                 else:
                     task[key] = value
-        task["metrics"] = _normalize_metrics(task.get("metrics"))
+        task["metric_snapshots"] = _normalize_metric_snapshots(task.get("metric_snapshots"))
+        task["metrics_latest"] = _latest_metrics_for_task(task)
+        task["metrics"] = _normalize_metrics(task.get("metrics_latest"))
         task["updated_at"] = now
         _write_tasks(package_dir, tasks)
         return task
@@ -201,12 +234,54 @@ def _write_tasks(package_dir: Path, tasks: list[dict[str, Any]]) -> None:
     (package_dir / "publish_tasks.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _latest_metrics_for_task(task: dict[str, Any]) -> dict[str, int | float]:
+    snapshots = _normalize_metric_snapshots(task.get("metric_snapshots"))
+    if snapshots:
+        return _normalize_metrics(snapshots[-1].get("metrics"))
+    metrics_latest = _normalize_metrics(task.get("metrics_latest"))
+    legacy_metrics = _normalize_metrics(task.get("metrics"))
+    if _has_metric_data(metrics_latest) or not _has_metric_data(legacy_metrics):
+        return metrics_latest
+    return legacy_metrics
+
+
+def _sync_latest_metrics_from_snapshot(task: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    metrics = _normalize_metrics(snapshot.get("metrics"))
+    task["metrics_latest"] = metrics
+    task["metrics"] = metrics
+
+
+def _normalize_metric_snapshots(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_normalize_metric_snapshot(item) for item in value if isinstance(item, dict)]
+
+
+def _normalize_metric_snapshot(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    label = str(source.get("label") or "custom").strip() or "custom"
+    if label not in SNAPSHOT_LABELS:
+        label = "custom"
+    captured_at = str(source.get("captured_at") or "").strip() or _utc_now()
+    note = str(source.get("note") or "").strip()
+    return {
+        "label": label,
+        "captured_at": captured_at,
+        "metrics": _normalize_metrics(source.get("metrics")),
+        "note": note,
+    }
+
+
 def _normalize_metrics(value: Any) -> dict[str, int | float]:
     source = value if isinstance(value, dict) else {}
     metrics: dict[str, int | float] = {}
     for key in METRIC_KEYS:
         metrics[key] = _parse_metric_value(key, source.get(key, 0))
     return metrics
+
+
+def _has_metric_data(metrics: dict[str, int | float]) -> bool:
+    return any(metrics.get(key, 0) > 0 for key in METRIC_KEYS)
 
 
 def _normalize_metric_updates(value: Any) -> dict[str, int | float]:

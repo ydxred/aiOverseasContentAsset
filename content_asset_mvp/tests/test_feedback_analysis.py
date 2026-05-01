@@ -24,6 +24,7 @@ def test_scores_platform_task_and_marks_proxy_metrics() -> None:
     scored = score_publish_task(task)
 
     assert scored["performance_score"] > 0
+    assert scored["metric_source"]["type"] == "metrics"
     assert scored["score_breakdown"]["proxy_used"] is True
     proxy_labels = {component["label"] for component in scored["score_breakdown"]["components"] if component["proxy"]}
     assert "完播" in proxy_labels
@@ -60,6 +61,93 @@ def test_feedback_report_summarizes_best_and_weak_tasks() -> None:
     assert report["source_weight_suggestions"]
 
 
+def test_score_publish_task_prefers_latest_snapshot_over_legacy_metrics() -> None:
+    task = {
+        "task_id": "demo__bilibili",
+        "content_id": "demo",
+        "platform": "bilibili",
+        "platform_name": "B站",
+        "metrics": {"views": 10, "likes": 1, "comments": 0, "favorites": 0, "shares": 0},
+        "metrics_latest": {"views": 20, "likes": 2, "comments": 0, "favorites": 0, "shares": 0},
+        "metric_snapshots": [
+            {
+                "label": "1h",
+                "captured_at": "2026-05-02T01:00:00Z",
+                "metrics": {"views": 100, "likes": 10, "comments": 2, "favorites": 3, "shares": 1, "coins": 1},
+                "note": "首小时",
+            },
+            {
+                "label": "latest",
+                "captured_at": "2026-05-03T00:00:00Z",
+                "metrics": {"views": 5000, "likes": 400, "comments": 160, "favorites": 300, "shares": 80, "coins": 80},
+                "note": "最新",
+            },
+        ],
+    }
+
+    scored = score_publish_task(task)
+
+    assert scored["metrics"]["views"] == 5000
+    assert scored["metric_source"]["type"] == "snapshot"
+    assert scored["metric_source"]["label"] == "latest"
+    assert scored["metric_source"]["captured_at"] == "2026-05-03T00:00:00Z"
+    assert scored["performance_score"] > 0
+
+
+def test_score_publish_task_falls_back_to_metrics_latest_and_legacy_metrics() -> None:
+    latest_scored = score_publish_task(
+        {
+            "task_id": "demo__douyin",
+            "content_id": "demo",
+            "platform": "douyin",
+            "metrics": {"views": 1},
+            "metrics_latest": {"views": 2000, "likes": 100, "comments": 20, "shares": 10},
+        }
+    )
+    legacy_scored = score_publish_task(
+        {
+            "task_id": "demo__kuaishou",
+            "content_id": "demo",
+            "platform": "kuaishou",
+            "metrics": {"views": 800, "likes": 40, "comments": 8, "favorites": 12, "shares": 4},
+        }
+    )
+
+    assert latest_scored["metrics"]["views"] == 2000
+    assert latest_scored["metric_source"]["type"] == "metrics_latest"
+    assert legacy_scored["metrics"]["views"] == 800
+    assert legacy_scored["metric_source"]["type"] == "metrics"
+
+
+def test_analyze_feedback_adds_time_window_summary() -> None:
+    report = analyze_feedback(
+        [
+            {
+                "task_id": "demo__bilibili",
+                "content_id": "demo",
+                "platform": "bilibili",
+                "platform_name": "B站",
+                "metric_snapshots": [
+                    {
+                        "label": "1h",
+                        "captured_at": "2026-05-02T01:00:00Z",
+                        "metrics": {"views": 1000, "likes": 80, "comments": 20, "favorites": 40, "coins": 10},
+                    },
+                    {
+                        "label": "24h",
+                        "captured_at": "2026-05-03T00:00:00Z",
+                        "metrics": {"views": 4000, "likes": 300, "comments": 80, "favorites": 160, "coins": 50},
+                    },
+                ],
+            }
+        ]
+    )
+
+    summary = {item["label"]: item for item in report["time_window_summary"]}
+    assert summary["1h"]["task_count"] == 1
+    assert summary["24h"]["average_score"] > summary["1h"]["average_score"]
+
+
 def test_cli_generates_feedback_report(tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     workspace_dir = tmp_path / "workspace"
@@ -89,6 +177,7 @@ def test_cli_generates_feedback_report(tmp_path: Path) -> None:
     assert report["total_tasks"] == 5
     assert report["data_tasks"] == 1
     assert report["best_tasks"][0]["task_id"] == tasks[0]["task_id"]
+    assert report["best_tasks"][0]["metric_source"]["type"] == "metrics"
 
 
 def test_generate_feedback_report_writes_file(tmp_path: Path) -> None:
@@ -129,6 +218,7 @@ def test_web_feedback_board_renders_and_refreshes(tmp_path: Path) -> None:
         assert "平台表现评分与反馈看板" in html
         assert "刷新反馈报告" in html
         assert "最佳平台" in html
+        assert "时间窗口汇总" in html
         assert "源池权重建议" in html
 
         request = Request(f"http://{host}:{port}/feedback-board/refresh", data=b"", method="POST")
