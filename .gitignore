@@ -17,6 +17,7 @@ content_asset_mvp/logs/
 content_asset_mvp/workspace/
 content_asset_mvp/output/
 content_asset_mvp/data/candidate_sources.json
+content_asset_mvp/data/feedback_report.json
 
 *.mp4
 *.mp3

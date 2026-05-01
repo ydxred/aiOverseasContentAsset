@@ -185,6 +185,30 @@ python -m app.main --publish-dry-run-ready --mock
 
 dry-run 只执行本地检查：账号配置、`final_video.mp4`、`platform_publish_package.json` 中对应平台的标题/简介/copy_block，以及本地结果记录。它不会上传视频、不会提交发布、不会登录第三方平台，也不会把任务状态改成 `published`。结果追加到对应输出包的 `publish_attempts.json`。
 
+## 平台表现评分与反馈看板
+
+发布看板中的 `publish_tasks.json` 支持记录基础指标 `views`、`likes`、`comments`、`favorites`、`shares`，也兼容扩展指标 `completion_rate`、`followers`、`private_messages`、`coins`、`search_hits`。旧任务没有扩展字段也能继续分析；反馈模块会先读取直接指标，缺失时用当前可用指标做 proxy，并在 `score_breakdown` 中标明。
+
+生成反馈报告：
+
+```bash
+python -m app.main --generate-feedback-report --mock
+```
+
+默认写入：
+
+```text
+data/feedback_report.json
+```
+
+Web 入口：
+
+```text
+http://127.0.0.1:8000/feedback-board
+```
+
+反馈看板会展示总任务数、有数据任务数、最佳平台、最佳视频、弱表现任务、内容洞察、平台洞察和源池权重建议。没有指标数据时，先到 `/publish-board` 录入发布表现，再回到反馈看板点击“刷新反馈报告”。
+
 ## Web 控制台
 
 启动浏览器操作界面：
@@ -219,6 +243,7 @@ http://127.0.0.1:8000/status
 在审核包详情页点击“生成视频”，从 chinese_script.md 生成 final_video.mp4；默认勾选离线 TTS fallback
 查看账号配置：展示五个平台账号、启用状态、发布入口和自动发布开关说明
 发布看板：对单个任务或所有 ready/scheduled 任务执行本地 dry-run 发布检查
+反馈看板：基于发布指标生成平台表现评分、内容洞察和源池权重建议
 查看系统状态：mock 默认状态、DATABASE_URL、psql、yt-dlp、ffmpeg、输出目录、审核包数量
 ```
 

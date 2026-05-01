@@ -16,6 +16,7 @@ from .db import Database
 from .distribution_adapter import create_distribution_record
 from .downloader import build_local_audio_meta, fetch_metadata_and_audio, make_content_id, make_file_content_id
 from .feedback_collector import create_feedback_template
+from .feedback_analysis import generate_feedback_report
 from .github_analyzer import analyze_github_project
 from .github_collector import collect_github_repository, make_github_content_id
 from .llm_client import LLMClient
@@ -81,6 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generate-platform-packages-all", action="store_true", help="Generate platform publish packages for every rendered final_video.mp4")
     parser.add_argument("--generate-publish-tasks", help="Generate or refresh publish_tasks.json for one content id and exit")
     parser.add_argument("--generate-publish-tasks-all", action="store_true", help="Generate or refresh publish tasks for every platform publish package")
+    parser.add_argument("--generate-feedback-report", action="store_true", help="Generate data/feedback_report.json from publish task metrics")
+    parser.add_argument("--feedback-report-path", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--platform-accounts-init", action="store_true", help="Initialize data/platform_accounts.yaml with non-sensitive account templates")
     parser.add_argument("--publish-dry-run", help="Run a dry-run publish check for one publish task id")
     parser.add_argument("--publish-dry-run-ready", action="store_true", help="Run dry-run publish checks for ready/scheduled tasks with enabled accounts")
@@ -96,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--comments", type=int, help="Comments metric for --update-publish-task")
     parser.add_argument("--favorites", type=int, help="Favorites metric for --update-publish-task")
     parser.add_argument("--shares", type=int, help="Shares metric for --update-publish-task")
+    parser.add_argument("--completion-rate", type=float, help="Completion rate metric for --update-publish-task, 0-1 or 0-100")
+    parser.add_argument("--followers", type=int, help="Follower conversion metric for --update-publish-task")
+    parser.add_argument("--private-messages", type=int, help="Private message metric for --update-publish-task")
+    parser.add_argument("--coins", type=int, help="Bilibili coin metric for --update-publish-task")
+    parser.add_argument("--search-hits", type=int, help="Search hit metric for --update-publish-task")
     parser.add_argument("--note", help="Operator note for --update-publish-task")
     parser.add_argument("--auto-close-loop", action="store_true", help="Discover, select, package, and render the best candidate")
     parser.add_argument("--auto-mock-discovery", action="store_true", help="Use deterministic mock discovery for --auto-close-loop")
@@ -191,6 +199,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if args.generate_publish_tasks_all:
         return _generate_publish_tasks_all(settings)
+
+    if args.generate_feedback_report:
+        return _generate_feedback_report(args, settings)
 
     if args.platform_accounts_init:
         return _platform_accounts_init(settings)
@@ -652,6 +663,22 @@ def _generate_publish_tasks_all(settings: object) -> int:
     tasks = generate_publish_tasks_all(settings.output_dir)
     content_count = len({task["content_id"] for task in tasks})
     print(f"Publish tasks generated: contents={content_count} tasks={len(tasks)} output_dir={settings.output_dir}")
+    return 0
+
+
+def _generate_feedback_report(args: argparse.Namespace, settings: object) -> int:
+    report_path = args.feedback_report_path or settings.root_dir / "data" / "feedback_report.json"
+    report = generate_feedback_report(settings.output_dir, report_path)
+    best_platform = report["best_platforms"][0]["platform_name"] if report.get("best_platforms") else "暂无"
+    best_task = report["best_tasks"][0]["task_id"] if report.get("best_tasks") else "暂无"
+    print(f"Feedback report generated: json={report_path}")
+    print(
+        "Summary: "
+        f"total_tasks={report['total_tasks']} "
+        f"data_tasks={report['data_tasks']} "
+        f"best_platform={best_platform} "
+        f"best_task={best_task}"
+    )
     return 0
 
 

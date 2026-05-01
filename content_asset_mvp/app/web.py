@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from .artifact_writer import ArtifactWriter
 from .config import load_settings
 from .downloader import check_download_dependencies, make_content_id
+from .feedback_analysis import analyze_feedback, generate_feedback_report, load_feedback_report
 from .github_auth import github_auth_status
 from .github_collector import make_github_content_id
 from .main import build_parser, run_pipeline
@@ -205,6 +206,7 @@ def _layout(title: str, body: str) -> str:
       <a href="/outputs">审核包列表</a>
       <a href="/videos">成片库</a>
       <a href="/publish-board">发布看板</a>
+      <a href="/feedback-board">反馈看板</a>
       <a href="/platform-accounts">账号配置</a>
       <a href="/status">系统状态</a>
     </nav>
@@ -355,6 +357,9 @@ class WebHandler(BaseHTTPRequestHandler):
             if parsed.path == "/publish-board":
                 self._send_html(self._publish_board(parse_qs(parsed.query)))
                 return
+            if parsed.path == "/feedback-board":
+                self._send_html(self._feedback_board())
+                return
             if parsed.path == "/platform-accounts":
                 self._send_html(self._platform_accounts())
                 return
@@ -410,6 +415,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/publish-board/refresh":
                 self._publish_board_refresh()
+                return
+            if parsed.path == "/feedback-board/refresh":
+                self._feedback_board_refresh()
                 return
             if parsed.path == "/publish-task":
                 self._publish_task(form)
@@ -977,6 +985,67 @@ class WebHandler(BaseHTTPRequestHandler):
 <div class="video-list">{task_cards or empty_html}</div>"""
         return _layout("发布看板", body)
 
+    def _feedback_board(self) -> str:
+        report_path = self.server.data_dir / "feedback_report.json"
+        report = load_feedback_report(report_path)
+        if not report:
+            report = analyze_feedback(load_all_publish_tasks(self.server.output_dir))
+            report["report_path"] = str(report_path)
+        best_platform = _first_label(report.get("best_platforms"), "platform_name")
+        best_task = _first_label(report.get("best_tasks"), "task_id")
+        fields = [
+            ("总任务数", report.get("total_tasks", 0)),
+            ("有数据任务数", report.get("data_tasks", 0)),
+            ("最佳平台", best_platform or "暂无"),
+            ("最佳视频", best_task or "暂无"),
+        ]
+        stat_html = "".join(
+            f"<div class='item'><div class='muted'>{_escape(label)}</div><strong>{_escape(value)}</strong></div>"
+            for label, value in fields
+        )
+        no_data_html = ""
+        if int(report.get("data_tasks") or 0) == 0:
+            no_data_html = """<div class="card">
+  <h2>还没有可分析的数据</h2>
+  <p class="muted">请先打开发布看板，刷新发布任务，并在已发布任务中录入 views、likes、comments、favorites、shares 等表现数据。录入后回到这里点击“刷新反馈报告”。</p>
+  <p><a class="button" href="/publish-board">去发布看板录入数据</a></p>
+</div>"""
+        body = f"""<div class="card">
+  <h1>平台表现评分与反馈看板</h1>
+  <p class="muted">基于 publish_tasks.json 中的发布指标计算平台表现分，并给出内容复盘、平台策略和源池权重建议。报告文件：<code>{_escape(report.get("report_path", report_path))}</code></p>
+  <form method="post" action="/feedback-board/refresh">
+    <button type="submit">刷新反馈报告</button>
+  </form>
+  <div class="grid">{stat_html}</div>
+  <p>{_feedback_notes_html(report.get("notes", []))}</p>
+</div>
+{no_data_html}
+<div class="card">
+  <h2>最佳平台</h2>
+  {_feedback_platforms_html(report.get("best_platforms", []))}
+</div>
+<div class="card">
+  <h2>最佳视频</h2>
+  {_feedback_tasks_html(report.get("best_tasks", []))}
+</div>
+<div class="card">
+  <h2>弱表现任务</h2>
+  {_feedback_tasks_html(report.get("weak_tasks", []))}
+</div>
+<div class="card">
+  <h2>内容洞察</h2>
+  {_feedback_list_html(report.get("content_insights", []))}
+</div>
+<div class="card">
+  <h2>平台洞察</h2>
+  {_feedback_list_html(report.get("platform_insights", []))}
+</div>
+<div class="card">
+  <h2>源池权重建议</h2>
+  {_feedback_source_suggestions_html(report.get("source_weight_suggestions", []))}
+</div>"""
+        return _layout("反馈看板", body)
+
     def _output_detail(self, content_id: str) -> str:
         if not CONTENT_ID_RE.fullmatch(content_id):
             raise ValueError("Invalid content id")
@@ -1134,6 +1203,10 @@ class WebHandler(BaseHTTPRequestHandler):
         generate_publish_tasks_all(self.server.output_dir)
         self._redirect("/publish-board")
 
+    def _feedback_board_refresh(self) -> None:
+        generate_feedback_report(self.server.output_dir, self.server.data_dir / "feedback_report.json")
+        self._redirect("/feedback-board")
+
     def _publish_task(self, form: dict[str, list[str]]) -> None:
         task_id = _form_value(form, "task_id")
         status = _form_value(form, "status", "pending_review")
@@ -1142,7 +1215,7 @@ class WebHandler(BaseHTTPRequestHandler):
             raise ValueError("Invalid publish task status")
         if priority not in PRIORITIES:
             raise ValueError("Invalid publish task priority")
-        metrics = {key: _form_int(form, key) for key in METRIC_KEYS}
+        metrics = {key: _form_metric(form, key) for key in METRIC_KEYS}
         updates = {
             "status": status,
             "priority": priority,
@@ -1293,8 +1366,28 @@ def _form_int(form: dict[str, list[str]], key: str) -> int:
         return 0
 
 
+def _form_metric(form: dict[str, list[str]], key: str) -> int | float:
+    value = _form_value(form, key, "0")
+    if key == "completion_rate":
+        try:
+            return max(0.0, float(value or 0))
+        except ValueError:
+            return 0.0
+    try:
+        return max(0, int(value or 0))
+    except ValueError:
+        return 0
+
+
 def _checked(value: Any) -> str:
     return "checked" if bool(value) else ""
+
+
+def _metric_input_html(key: str, value: Any) -> str:
+    step = " step='0.01'" if key == "completion_rate" else ""
+    hint = "（0-1 或 0-100）" if key == "completion_rate" else ""
+    return f"""<label>{_escape(key)}{_escape(hint)}</label>
+    <input type="number" min="0"{step} name="{_escape(key)}" value="{_escape(value)}">"""
 
 
 def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | None = None) -> str:
@@ -1310,11 +1403,7 @@ def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | No
     )
     status_options = "".join(_select_option(status, status, str(task.get("status") or "pending_review")) for status in STATUSES)
     priority_options = "".join(_select_option(priority, priority, str(task.get("priority") or "normal")) for priority in PRIORITIES)
-    metric_inputs = "".join(
-        f"""<label>{_escape(key)}</label>
-    <input type="number" min="0" name="{_escape(key)}" value="{_escape(metrics.get(key, 0))}">"""
-        for key in METRIC_KEYS
-    )
+    metric_inputs = "".join(_metric_input_html(key, metrics.get(key, 0)) for key in METRIC_KEYS)
     if latest_attempt:
         attempt_status = latest_attempt.get("status", "-")
         attempt_at = latest_attempt.get("created_at", "-")
@@ -1381,6 +1470,83 @@ def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | No
     <button type="submit">保存任务</button>
   </form>
 </div>"""
+
+
+def _first_label(items: Any, key: str) -> str:
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        return str(items[0].get(key) or "")
+    return ""
+
+
+def _feedback_notes_html(notes: Any) -> str:
+    if not isinstance(notes, list):
+        return ""
+    return " ".join(f"<span class='pill'>{_escape(note)}</span>" for note in notes if str(note).strip())
+
+
+def _feedback_platforms_html(platforms: Any) -> str:
+    if not isinstance(platforms, list) or not platforms:
+        return "<p class='muted'>暂无平台表现数据。</p>"
+    cards = []
+    for platform in platforms:
+        if not isinstance(platform, dict):
+            continue
+        cards.append(
+            "<div class='item'>"
+            f"<strong>{_escape(platform.get('platform_name', platform.get('platform', '-')))}</strong>"
+            f"<p><span class='pill'>平均分: {_escape(platform.get('average_score', 0))}</span>"
+            f"<span class='pill'>任务数: {_escape(platform.get('task_count', 0))}</span></p>"
+            f"<p class='muted'>最佳任务：{_escape(platform.get('best_task_id', '-'))}</p>"
+            "</div>"
+        )
+    return f"<div class='grid'>{''.join(cards)}</div>"
+
+
+def _feedback_tasks_html(tasks: Any) -> str:
+    if not isinstance(tasks, list) or not tasks:
+        return "<p class='muted'>暂无任务表现数据。</p>"
+    cards = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        breakdown = task.get("score_breakdown") if isinstance(task.get("score_breakdown"), dict) else {}
+        proxy = "有代理指标" if breakdown.get("proxy_used") else "直接指标"
+        cards.append(
+            "<div class='item'>"
+            f"<strong>{_escape(task.get('title') or task.get('content_id') or '-')}</strong>"
+            f"<p><span class='pill'>{_escape(task.get('platform_name', task.get('platform', '-')))}</span>"
+            f"<span class='pill'>评分: {_escape(task.get('performance_score', 0))}</span>"
+            f"<span class='pill'>{_escape(proxy)}</span></p>"
+            f"<p class='muted'>{_escape(task.get('task_id', '-'))}</p>"
+            f"<p>{_escape(breakdown.get('summary', ''))}</p>"
+            "</div>"
+        )
+    return f"<div class='grid'>{''.join(cards)}</div>"
+
+
+def _feedback_list_html(items: Any) -> str:
+    if not isinstance(items, list) or not items:
+        return "<p class='muted'>暂无。</p>"
+    return "<ul>" + "".join(f"<li>{_escape(item)}</li>" for item in items if str(item).strip()) + "</ul>"
+
+
+def _feedback_source_suggestions_html(items: Any) -> str:
+    if not isinstance(items, list) or not items:
+        return "<p class='muted'>暂无源池权重建议。</p>"
+    cards = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("content_id") or item.get("scope") or "source_pool"
+        cards.append(
+            "<div class='item'>"
+            f"<strong>{_escape(title)}</strong>"
+            f"<p><span class='pill'>平均分: {_escape(item.get('average_score', '-'))}</span></p>"
+            f"<p>{_escape(item.get('suggestion', ''))}</p>"
+            f"<p class='muted'>{_escape(item.get('reason', ''))}</p>"
+            "</div>"
+        )
+    return f"<div class='grid'>{''.join(cards)}</div>"
 
 
 def _select_option(value: str, label: str, selected_value: str) -> str:

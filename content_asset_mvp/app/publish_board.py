@@ -10,7 +10,9 @@ from .platform_publish import PLATFORMS
 
 STATUSES = ["pending_review", "ready", "needs_revision", "scheduled", "published", "rejected", "not_suitable"]
 PRIORITIES = ["low", "normal", "high", "urgent"]
-METRIC_KEYS = ["views", "likes", "comments", "favorites", "shares"]
+BASE_METRIC_KEYS = ["views", "likes", "comments", "favorites", "shares"]
+EXTENDED_METRIC_KEYS = ["completion_rate", "followers", "private_messages", "coins", "search_hits"]
+METRIC_KEYS = BASE_METRIC_KEYS + EXTENDED_METRIC_KEYS
 MANUAL_FIELDS = {"status", "priority", "scheduled_at", "account", "publish_url", "published_at", "metrics", "note"}
 ATTEMPT_FIELDS = {"last_attempt_id", "last_attempt_status", "last_attempt_at", "last_attempt_mode"}
 STATUS_SORT_RANK = {
@@ -199,29 +201,35 @@ def _write_tasks(package_dir: Path, tasks: list[dict[str, Any]]) -> None:
     (package_dir / "publish_tasks.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _normalize_metrics(value: Any) -> dict[str, int]:
+def _normalize_metrics(value: Any) -> dict[str, int | float]:
     source = value if isinstance(value, dict) else {}
-    metrics: dict[str, int] = {}
+    metrics: dict[str, int | float] = {}
     for key in METRIC_KEYS:
-        try:
-            metrics[key] = max(0, int(source.get(key, 0) or 0))
-        except (TypeError, ValueError):
-            metrics[key] = 0
+        metrics[key] = _parse_metric_value(key, source.get(key, 0))
     return metrics
 
 
-def _normalize_metric_updates(value: Any) -> dict[str, int]:
+def _normalize_metric_updates(value: Any) -> dict[str, int | float]:
     if not isinstance(value, dict):
         return {}
-    updates: dict[str, int] = {}
+    updates: dict[str, int | float] = {}
     for key, raw in value.items():
         if key not in METRIC_KEYS:
             continue
-        try:
-            updates[key] = max(0, int(raw or 0))
-        except (TypeError, ValueError):
-            updates[key] = 0
+        updates[key] = _parse_metric_value(key, raw)
     return updates
+
+
+def _parse_metric_value(key: str, raw: Any) -> int | float:
+    if key == "completion_rate":
+        try:
+            return max(0.0, float(raw or 0))
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _as_text_list(value: Any) -> list[str]:

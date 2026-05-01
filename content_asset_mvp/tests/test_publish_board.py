@@ -25,7 +25,10 @@ def test_generate_publish_tasks_writes_one_task_per_platform(tmp_path: Path) -> 
     assert first["task_id"] == f"demo__{first['platform']}"
     assert first["status"] == "pending_review"
     assert first["priority"] == "normal"
-    assert first["metrics"] == {"views": 0, "likes": 0, "comments": 0, "favorites": 0, "shares": 0}
+    assert first["metrics"]["views"] == 0
+    assert first["metrics"]["likes"] == 0
+    assert first["metrics"]["completion_rate"] == 0.0
+    assert first["metrics"]["coins"] == 0
     assert first["title"]
     assert first["manual_review_risks"]
 
