@@ -161,6 +161,30 @@ python -m app.main --render-video "<content_id>" --video-mock
 
 视频生成会读取 `output/<content_id>/chinese_script.md` 中的 `# 口播稿`，输出 `voice.wav` 或 `voice.mp3`、`subtitles.srt`、`tts_status.json`、`render_status.json` 和 `final_video.mp4`。真实模式优先使用 OpenAI TTS；如果没有配置 key、请求失败，或使用 `--video-mock`，系统会用 ffmpeg 生成离线静音音频，并在 `tts_status.json` 记录原因，保证可以继续渲染视频验证完整链路。字幕烧录失败时会降级生成无字幕视频，并在 `render_status.json` 记录原因。
 
+## 平台账号与发布 dry-run
+
+初始化五个平台的非敏感账号模板：
+
+```bash
+python -m app.main --platform-accounts-init --mock
+```
+
+配置文件写入 `data/platform_accounts.yaml`，只保存账号标识、显示名、启用状态、发布入口、备注和自动发布开关；不要在这里保存任何敏感凭据或平台授权值。
+
+生成发布包和发布任务后，可以对单个任务做本地 dry-run：
+
+```bash
+python -m app.main --publish-dry-run "<task_id>" --mock
+```
+
+也可以对所有 `ready` / `scheduled` 且账号启用的平台任务做批量 dry-run：
+
+```bash
+python -m app.main --publish-dry-run-ready --mock
+```
+
+dry-run 只执行本地检查：账号配置、`final_video.mp4`、`platform_publish_package.json` 中对应平台的标题/简介/copy_block，以及本地结果记录。它不会上传视频、不会提交发布、不会登录第三方平台，也不会把任务状态改成 `published`。结果追加到对应输出包的 `publish_attempts.json`。
+
 ## Web 控制台
 
 启动浏览器操作界面：
@@ -193,6 +217,8 @@ http://127.0.0.1:8000/status
 查看源池管理：人物源、项目源、社区源、关键词发现入口和 discovery links
 查看候选源审核：候选统计、score、status、reason、signals、来源和链接，并可运行 mock discovery、批准、拒绝或归档候选
 在审核包详情页点击“生成视频”，从 chinese_script.md 生成 final_video.mp4；默认勾选离线 TTS fallback
+查看账号配置：展示五个平台账号、启用状态、发布入口和自动发布开关说明
+发布看板：对单个任务或所有 ready/scheduled 任务执行本地 dry-run 发布检查
 查看系统状态：mock 默认状态、DATABASE_URL、psql、yt-dlp、ffmpeg、输出目录、审核包数量
 ```
 

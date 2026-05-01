@@ -12,6 +12,7 @@ STATUSES = ["pending_review", "ready", "needs_revision", "scheduled", "published
 PRIORITIES = ["low", "normal", "high", "urgent"]
 METRIC_KEYS = ["views", "likes", "comments", "favorites", "shares"]
 MANUAL_FIELDS = {"status", "priority", "scheduled_at", "account", "publish_url", "published_at", "metrics", "note"}
+ATTEMPT_FIELDS = {"last_attempt_id", "last_attempt_status", "last_attempt_at", "last_attempt_mode"}
 STATUS_SORT_RANK = {
     "ready": 0,
     "scheduled": 1,
@@ -56,6 +57,10 @@ def generate_publish_tasks(content_id: str, package_dir: Path) -> list[dict[str,
             "published_at": previous.get("published_at") or "",
             "metrics": _normalize_metrics(previous.get("metrics")),
             "note": previous.get("note") or "",
+            "last_attempt_id": previous.get("last_attempt_id") or "",
+            "last_attempt_status": previous.get("last_attempt_status") or "",
+            "last_attempt_at": previous.get("last_attempt_at") or "",
+            "last_attempt_mode": previous.get("last_attempt_mode") or "",
             "title": asset.get("title") or "",
             "suitable": suitable,
             "manual_review_risks": _as_text_list(asset.get("manual_review_risks")),
@@ -130,6 +135,22 @@ def update_publish_task(output_dir: Path, task_id: str, updates: dict[str, Any])
                 else:
                     task[key] = value
         task["metrics"] = _normalize_metrics(task.get("metrics"))
+        task["updated_at"] = now
+        _write_tasks(package_dir, tasks)
+        return task
+    raise FileNotFoundError(f"Publish task not found: {task_id}")
+
+
+def update_publish_task_attempt(output_dir: Path, task_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    package_dir = _find_task_package(output_dir, task_id)
+    tasks = load_publish_tasks(package_dir)
+    now = _utc_now()
+    for task in tasks:
+        if task.get("task_id") != task_id:
+            continue
+        for key, value in updates.items():
+            if key in ATTEMPT_FIELDS:
+                task[key] = value
         task["updated_at"] = now
         _write_tasks(package_dir, tasks)
         return task

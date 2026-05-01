@@ -22,7 +22,9 @@ from .llm_client import LLMClient
 from .logger import setup_logger
 from .media_producer import prepare_media_job, render_video_package
 from .opportunity_engine import evaluate_opportunity
+from .platform_accounts import init_platform_accounts
 from .platform_publish import generate_platform_publish_package, generate_platform_publish_packages_all
+from .publish_adapter import dry_run_publish_task, dry_run_ready_publish_tasks
 from .publish_board import METRIC_KEYS, STATUSES, generate_publish_tasks, generate_publish_tasks_all, update_publish_task
 from .publish_review import ensure_publish_review, update_publish_review
 from .quality_checker import check_quality
@@ -79,6 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generate-platform-packages-all", action="store_true", help="Generate platform publish packages for every rendered final_video.mp4")
     parser.add_argument("--generate-publish-tasks", help="Generate or refresh publish_tasks.json for one content id and exit")
     parser.add_argument("--generate-publish-tasks-all", action="store_true", help="Generate or refresh publish tasks for every platform publish package")
+    parser.add_argument("--platform-accounts-init", action="store_true", help="Initialize data/platform_accounts.yaml with non-sensitive account templates")
+    parser.add_argument("--publish-dry-run", help="Run a dry-run publish check for one publish task id")
+    parser.add_argument("--publish-dry-run-ready", action="store_true", help="Run dry-run publish checks for ready/scheduled tasks with enabled accounts")
     parser.add_argument("--update-publish-task", help="Update one publish task by task_id and exit")
     parser.add_argument("--task-status", choices=STATUSES, help="New status for --update-publish-task")
     parser.add_argument("--priority", choices=["low", "normal", "high", "urgent"], help="New priority for --update-publish-task")
@@ -186,6 +191,15 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if args.generate_publish_tasks_all:
         return _generate_publish_tasks_all(settings)
+
+    if args.platform_accounts_init:
+        return _platform_accounts_init(settings)
+
+    if args.publish_dry_run:
+        return _publish_dry_run(args, settings)
+
+    if args.publish_dry_run_ready:
+        return _publish_dry_run_ready(settings)
 
     if args.update_publish_task:
         return _update_publish_task(args, settings)
@@ -639,6 +653,43 @@ def _generate_publish_tasks_all(settings: object) -> int:
     content_count = len({task["content_id"] for task in tasks})
     print(f"Publish tasks generated: contents={content_count} tasks={len(tasks)} output_dir={settings.output_dir}")
     return 0
+
+
+def _platform_accounts_init(settings: object) -> int:
+    accounts_path = settings.root_dir / "data" / "platform_accounts.yaml"
+    accounts = init_platform_accounts(accounts_path)
+    print(f"Platform account templates ready: accounts={len(accounts)} yaml={accounts_path}")
+    return 0
+
+
+def _publish_dry_run(args: argparse.Namespace, settings: object) -> int:
+    accounts_path = settings.root_dir / "data" / "platform_accounts.yaml"
+    init_platform_accounts(accounts_path)
+    attempt = dry_run_publish_task(settings.output_dir, accounts_path, str(args.publish_dry_run))
+    print(
+        "Publish dry-run finished: "
+        f"task_id={attempt['task_id']} "
+        f"platform={attempt['platform']} "
+        f"status={attempt['status']} "
+        f"attempt_id={attempt['attempt_id']}"
+    )
+    print(f"Attempts: {settings.output_dir / str(attempt['task_id']).split('__')[0] / 'publish_attempts.json'}")
+    if attempt.get("error"):
+        print(f"Error: {attempt['error']}")
+        return 1
+    return 0
+
+
+def _publish_dry_run_ready(settings: object) -> int:
+    accounts_path = settings.root_dir / "data" / "platform_accounts.yaml"
+    init_platform_accounts(accounts_path)
+    attempts = dry_run_ready_publish_tasks(settings.output_dir, accounts_path)
+    succeeded = sum(1 for attempt in attempts if attempt.get("status") == "succeeded")
+    failed = len(attempts) - succeeded
+    print(f"Publish dry-run ready finished: attempts={len(attempts)} succeeded={succeeded} failed={failed}")
+    for attempt in attempts:
+        print(f"  - {attempt['task_id']}: {attempt['status']} {attempt.get('error', '')}")
+    return 1 if failed else 0
 
 
 def _update_publish_task(args: argparse.Namespace, settings: object) -> int:

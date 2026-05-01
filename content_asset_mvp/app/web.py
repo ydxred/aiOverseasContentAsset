@@ -18,7 +18,9 @@ from .downloader import check_download_dependencies, make_content_id
 from .github_auth import github_auth_status
 from .github_collector import make_github_content_id
 from .main import build_parser, run_pipeline
+from .platform_accounts import init_platform_accounts, update_platform_account
 from .platform_publish import PLATFORMS, generate_platform_publish_package
+from .publish_adapter import dry_run_publish_task, dry_run_ready_publish_tasks, latest_attempts_by_task
 from .publish_board import (
     METRIC_KEYS,
     PRIORITIES,
@@ -203,6 +205,7 @@ def _layout(title: str, body: str) -> str:
       <a href="/outputs">审核包列表</a>
       <a href="/videos">成片库</a>
       <a href="/publish-board">发布看板</a>
+      <a href="/platform-accounts">账号配置</a>
       <a href="/status">系统状态</a>
     </nav>
   </header>
@@ -352,6 +355,9 @@ class WebHandler(BaseHTTPRequestHandler):
             if parsed.path == "/publish-board":
                 self._send_html(self._publish_board(parse_qs(parsed.query)))
                 return
+            if parsed.path == "/platform-accounts":
+                self._send_html(self._platform_accounts())
+                return
             if parsed.path == "/sources":
                 self._send_html(self._sources())
                 return
@@ -407,6 +413,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/publish-task":
                 self._publish_task(form)
+                return
+            if parsed.path == "/publish-dry-run":
+                self._publish_dry_run(form)
+                return
+            if parsed.path == "/publish-dry-run-ready":
+                self._publish_dry_run_ready()
+                return
+            if parsed.path == "/platform-accounts":
+                self._platform_accounts_update(form)
                 return
             if parsed.path == "/discover-sources":
                 self._discover_sources(form)
@@ -821,9 +836,72 @@ class WebHandler(BaseHTTPRequestHandler):
 <div class="video-list">{''.join(items)}</div>"""
         return _layout("成片库", body)
 
+    def _platform_accounts(self) -> str:
+        accounts_path = self.server.data_dir / "platform_accounts.yaml"
+        accounts = init_platform_accounts(accounts_path)
+        cards = []
+        for account in accounts:
+            platform = str(account.get("platform") or "")
+            publish_url = str(account.get("publish_url") or "")
+            publish_link = (
+                f"<a href='{_escape(publish_url)}' target='_blank' rel='noreferrer'>打开发布入口</a>"
+                if publish_url
+                else "<span class='muted'>未配置发布入口</span>"
+            )
+            cards.append(
+                f"""<div class="card">
+  <h2>{_escape(account.get("platform_name", platform))}</h2>
+  <p>
+    <span class="pill">platform: {_escape(platform)}</span>
+    <span class="pill">enabled: {_escape(account.get("enabled"))}</span>
+    <span class="pill">auto_publish_enabled: {_escape(account.get("auto_publish_enabled"))}</span>
+  </p>
+  <p><strong>账号：</strong>{_escape(account.get("display_name", ""))} · <code>{_escape(account.get("account_id", ""))}</code> · {publish_link}</p>
+  <p class="muted">登录方式：{_escape(account.get("login_method", ""))}；优先级：{_escape(account.get("default_priority", ""))}</p>
+  <p class="muted">{_escape(account.get("notes", ""))}</p>
+  <form method="post" action="/platform-accounts">
+    <input type="hidden" name="platform" value="{_escape(platform)}">
+    <div class="grid">
+      <div>
+        <label>account_id</label>
+        <input type="text" name="account_id" value="{_escape(account.get("account_id", ""))}">
+      </div>
+      <div>
+        <label>display_name</label>
+        <input type="text" name="display_name" value="{_escape(account.get("display_name", ""))}">
+      </div>
+      <div>
+        <label>login_method</label>
+        <input type="text" name="login_method" value="{_escape(account.get("login_method", ""))}">
+      </div>
+      <div>
+        <label>default_priority</label>
+        <input type="number" min="1" name="default_priority" value="{_escape(account.get("default_priority", 99))}">
+      </div>
+    </div>
+    <label>publish_url</label>
+    <input type="text" name="publish_url" value="{_escape(account.get("publish_url", ""))}">
+    <label>notes</label>
+    <textarea name="notes">{_escape(account.get("notes", ""))}</textarea>
+    <label><input type="checkbox" name="enabled" {_checked(account.get("enabled"))}> 启用该平台账号</label>
+    <label><input type="checkbox" name="auto_publish_enabled" {_checked(account.get("auto_publish_enabled"))}> 允许后续真实自动发布使用该账号</label>
+    <button type="submit">保存非敏感配置</button>
+  </form>
+</div>"""
+            )
+        body = f"""<div class="card">
+  <h1>平台账号配置中心</h1>
+  <p class="muted">这里保存五个平台的非敏感发布配置：账号标识、显示名、启用状态、发布入口和备注。不要填写密码、cookie、token 或 API key。</p>
+  <p class="muted">Dry-run 只要求账号 enabled；真正自动发布的适配器后续还需要显式开启 auto_publish_enabled，并接入人工确认或平台授权。</p>
+  <p><code>{_escape(accounts_path)}</code></p>
+</div>
+{''.join(cards)}"""
+        return _layout("账号配置", body)
+
     def _publish_board(self, query: dict[str, list[str]] | None = None) -> str:
         query = query or {}
         tasks = load_all_publish_tasks(self.server.output_dir)
+        latest_attempts = latest_attempts_by_task(self.server.output_dir)
         selected_status = _form_value(query, "status", "")
         selected_platform = _form_value(query, "platform", "")
         selected_sort = _form_value(query, "sort", "recommended")
@@ -847,7 +925,7 @@ class WebHandler(BaseHTTPRequestHandler):
             platform=selected_platform,
             sort_by=selected_sort,
         )
-        task_cards = "".join(_publish_task_card(task) for task in visible_tasks)
+        task_cards = "".join(_publish_task_card(task, latest_attempts.get(str(task.get("task_id") or ""))) for task in visible_tasks)
         status_options = '<option value="">全部状态</option>' + "".join(
             _select_option(status, status, selected_status) for status in STATUSES
         )
@@ -870,6 +948,9 @@ class WebHandler(BaseHTTPRequestHandler):
   <p class="muted">每个成片的每个平台是一条独立任务；这里只做人工审核、排期、发布记录和指标录入，不会自动发布。</p>
   <form method="post" action="/publish-board/refresh">
     <button type="submit">刷新全部发布任务</button>
+  </form>
+  <form method="post" action="/publish-dry-run-ready">
+    <button class="secondary" type="submit">Dry-run 所有 ready/scheduled</button>
   </form>
   <p>{status_summary}</p>
   <p>{platform_summary}</p>
@@ -1075,6 +1156,34 @@ class WebHandler(BaseHTTPRequestHandler):
         update_publish_task(self.server.output_dir, task_id, updates)
         self._redirect("/publish-board")
 
+    def _publish_dry_run(self, form: dict[str, list[str]]) -> None:
+        task_id = _form_value(form, "task_id")
+        accounts_path = self.server.data_dir / "platform_accounts.yaml"
+        init_platform_accounts(accounts_path)
+        dry_run_publish_task(self.server.output_dir, accounts_path, task_id)
+        self._redirect("/publish-board")
+
+    def _publish_dry_run_ready(self) -> None:
+        accounts_path = self.server.data_dir / "platform_accounts.yaml"
+        init_platform_accounts(accounts_path)
+        dry_run_ready_publish_tasks(self.server.output_dir, accounts_path)
+        self._redirect("/publish-board")
+
+    def _platform_accounts_update(self, form: dict[str, list[str]]) -> None:
+        platform = _form_value(form, "platform")
+        updates = {
+            "account_id": _form_value(form, "account_id", ""),
+            "display_name": _form_value(form, "display_name", ""),
+            "enabled": "enabled" in form,
+            "auto_publish_enabled": "auto_publish_enabled" in form,
+            "login_method": _form_value(form, "login_method", ""),
+            "publish_url": _form_value(form, "publish_url", ""),
+            "notes": _form_value(form, "notes", ""),
+            "default_priority": _form_int(form, "default_priority") or 99,
+        }
+        update_platform_account(self.server.data_dir / "platform_accounts.yaml", platform, updates)
+        self._redirect("/platform-accounts")
+
     def _discover_sources(self, form: dict[str, list[str]]) -> None:
         discover_sources(mock="mock" in form)
         self._redirect("/source-discovery")
@@ -1161,6 +1270,7 @@ class ContentAssetWebServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], handler_class: type[BaseHTTPRequestHandler]) -> None:
         settings = load_settings(force_mock=True)
         self.root_dir = settings.root_dir
+        self.data_dir = settings.root_dir / "data"
         self.output_dir = settings.output_dir
         self.workspace_dir = settings.workspace_dir
         super().__init__(server_address, handler_class)
@@ -1183,7 +1293,11 @@ def _form_int(form: dict[str, list[str]], key: str) -> int:
         return 0
 
 
-def _publish_task_card(task: dict[str, Any]) -> str:
+def _checked(value: Any) -> str:
+    return "checked" if bool(value) else ""
+
+
+def _publish_task_card(task: dict[str, Any], latest_attempt: dict[str, Any] | None = None) -> str:
     metrics = task.get("metrics") if isinstance(task.get("metrics"), dict) else {}
     risks = task.get("manual_review_risks") if isinstance(task.get("manual_review_risks"), list) else []
     risks_html = "".join(f"<li>{_escape(item)}</li>" for item in risks if str(item).strip())
@@ -1201,6 +1315,20 @@ def _publish_task_card(task: dict[str, Any]) -> str:
     <input type="number" min="0" name="{_escape(key)}" value="{_escape(metrics.get(key, 0))}">"""
         for key in METRIC_KEYS
     )
+    if latest_attempt:
+        attempt_status = latest_attempt.get("status", "-")
+        attempt_at = latest_attempt.get("created_at", "-")
+        attempt_error = latest_attempt.get("error", "")
+        latest_attempt_html = (
+            "<p>"
+            f"<strong>最近 dry-run：</strong>{_escape(attempt_status)} · {_escape(attempt_at)}"
+            + (f" · <span class='error'>{_escape(attempt_error)}</span>" if attempt_error else "")
+            + "</p>"
+        )
+    elif task.get("last_attempt_status"):
+        latest_attempt_html = f"""<p><strong>最近 dry-run：</strong>{_escape(task.get("last_attempt_status"))} · {_escape(task.get("last_attempt_at", ""))}</p>"""
+    else:
+        latest_attempt_html = "<p class='muted'>最近 dry-run：暂无</p>"
     return f"""<div class="card">
   <h2>{_escape(task.get("title") or task.get("content_id"))}</h2>
   <p>
@@ -1212,6 +1340,11 @@ def _publish_task_card(task: dict[str, Any]) -> str:
   <p class="muted">{_escape(task.get("content_id"))} · {_escape(task.get("task_id"))}</p>
   <p><strong>排期：</strong>{_escape(task.get("scheduled_at") or "未排期")} · <strong>账号：</strong>{_escape(task.get("account") or "未填写")} · {publish_link}</p>
   <p><strong>关键指标：</strong>{_escape(metrics_summary)}</p>
+  {latest_attempt_html}
+  <form method="post" action="/publish-dry-run">
+    <input type="hidden" name="task_id" value="{_escape(task.get("task_id"))}">
+    <button class="secondary" type="submit">Dry-run 发布检查</button>
+  </form>
   <h3>风险提示</h3>
   <ul>{risks_html or "<li>发布前做最终人工复核。</li>"}</ul>
   <form method="post" action="/publish-task">
