@@ -33,6 +33,7 @@ from .rewriter import rewrite_script
 from .risk_checker import check_risk
 from .scorer import score_topic
 from .source_discovery import discover_sources, load_candidate_pool, save_candidate_pool
+from .source_feedback import apply_source_feedback, generate_source_feedback_report
 from .source_review import approve_candidate, archive_candidate, reject_candidate
 from .snapshotter import snapshot_github_repo
 from .transcriber import transcribe
@@ -84,6 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generate-publish-tasks-all", action="store_true", help="Generate or refresh publish tasks for every platform publish package")
     parser.add_argument("--generate-feedback-report", action="store_true", help="Generate data/feedback_report.json from publish task metrics")
     parser.add_argument("--feedback-report-path", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--generate-source-feedback-report", action="store_true", help="Generate data/source_feedback_report.json from publish performance")
+    parser.add_argument("--apply-source-feedback-write", action="store_true", help="Write conservative source feedback weights to data/sources.yaml")
+    parser.add_argument("--source-feedback-report-path", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--platform-accounts-init", action="store_true", help="Initialize data/platform_accounts.yaml with non-sensitive account templates")
     parser.add_argument("--publish-dry-run", help="Run a dry-run publish check for one publish task id")
     parser.add_argument("--publish-dry-run-ready", action="store_true", help="Run dry-run publish checks for ready/scheduled tasks with enabled accounts")
@@ -202,6 +206,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if args.generate_feedback_report:
         return _generate_feedback_report(args, settings)
+
+    if args.generate_source_feedback_report:
+        return _generate_source_feedback_report(args, settings)
 
     if args.platform_accounts_init:
         return _platform_accounts_init(settings)
@@ -680,6 +687,50 @@ def _generate_feedback_report(args: argparse.Namespace, settings: object) -> int
         f"best_task={best_task}"
     )
     return 0
+
+
+def _generate_source_feedback_report(args: argparse.Namespace, settings: object) -> int:
+    report_path = args.source_feedback_report_path or settings.root_dir / "data" / "source_feedback_report.json"
+    if args.apply_source_feedback_write:
+        result = apply_source_feedback(
+            settings.output_dir,
+            dry_run=False,
+            report_path=report_path,
+            feedback_report_path=settings.root_dir / "data" / "feedback_report.json",
+            sources_path=args.sources_path or settings.root_dir / "data" / "sources.yaml",
+        )
+        report = result["report"]
+        application = result["application"]
+    else:
+        report = generate_source_feedback_report(
+            settings.output_dir,
+            report_path,
+            feedback_report_path=settings.root_dir / "data" / "feedback_report.json",
+            sources_path=args.sources_path or settings.root_dir / "data" / "sources.yaml",
+        )
+        application = {"dry_run": True, "applied_count": 0}
+    counts = _source_feedback_action_counts(report.get("source_suggestions", []))
+    print(f"Source feedback report generated: json={report_path}")
+    print(
+        "Summary: "
+        f"total_scored_tasks={report['total_scored_tasks']} "
+        f"increase={counts.get('increase', 0)} "
+        f"keep={counts.get('keep', 0)} "
+        f"decrease={counts.get('decrease', 0)} "
+        f"insufficient_data={counts.get('insufficient_data', 0)} "
+        f"write_applied={application['applied_count']}"
+    )
+    return 0
+
+
+def _source_feedback_action_counts(suggestions: Any) -> dict[str, int]:
+    counts = {"increase": 0, "keep": 0, "decrease": 0, "insufficient_data": 0}
+    if not isinstance(suggestions, list):
+        return counts
+    for suggestion in suggestions:
+        if isinstance(suggestion, dict) and suggestion.get("action") in counts:
+            counts[str(suggestion["action"])] += 1
+    return counts
 
 
 def _platform_accounts_init(settings: object) -> int:

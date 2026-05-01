@@ -33,6 +33,7 @@ from .publish_board import (
 )
 from .publish_review import load_publish_review, update_publish_review
 from .source_discovery import candidate_stats, discover_sources, load_candidate_pool
+from .source_feedback import generate_source_feedback_report, load_source_feedback_report
 from .source_manager import generate_discovery_links, group_sources_by_type, load_sources, source_stats
 from .source_review import approve_candidate, archive_candidate, reject_candidate
 from .youtube_analyzer import make_youtube_candidate_content_id
@@ -418,6 +419,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/feedback-board/refresh":
                 self._feedback_board_refresh()
+                return
+            if parsed.path == "/feedback-board/source-feedback":
+                self._source_feedback_refresh()
                 return
             if parsed.path == "/publish-task":
                 self._publish_task(form)
@@ -988,6 +992,8 @@ class WebHandler(BaseHTTPRequestHandler):
     def _feedback_board(self) -> str:
         report_path = self.server.data_dir / "feedback_report.json"
         report = load_feedback_report(report_path)
+        source_feedback_path = self.server.data_dir / "source_feedback_report.json"
+        source_feedback = load_source_feedback_report(source_feedback_path)
         if not report:
             report = analyze_feedback(load_all_publish_tasks(self.server.output_dir))
             report["report_path"] = str(report_path)
@@ -1016,6 +1022,9 @@ class WebHandler(BaseHTTPRequestHandler):
   <form method="post" action="/feedback-board/refresh">
     <button type="submit">刷新反馈报告</button>
   </form>
+  <form method="post" action="/feedback-board/source-feedback">
+    <button class="secondary" type="submit">生成源池反馈建议</button>
+  </form>
   <div class="grid">{stat_html}</div>
   <p>{_feedback_notes_html(report.get("notes", []))}</p>
 </div>
@@ -1043,6 +1052,12 @@ class WebHandler(BaseHTTPRequestHandler):
 <div class="card">
   <h2>源池权重建议</h2>
   {_feedback_source_suggestions_html(report.get("source_weight_suggestions", []))}
+</div>
+<div class="card">
+  <h2>源池反馈建议</h2>
+  <p class="muted">默认只生成 dry-run 建议报告，不会自动修改 sources.yaml；数据不足时会标记 insufficient_data 或 keep。</p>
+  <p class="muted">报告文件：<code>{_escape(source_feedback.get("report_path", source_feedback_path))}</code></p>
+  {_source_feedback_suggestions_html(source_feedback.get("source_suggestions", []))}
 </div>"""
         return _layout("反馈看板", body)
 
@@ -1205,6 +1220,15 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _feedback_board_refresh(self) -> None:
         generate_feedback_report(self.server.output_dir, self.server.data_dir / "feedback_report.json")
+        self._redirect("/feedback-board")
+
+    def _source_feedback_refresh(self) -> None:
+        generate_source_feedback_report(
+            self.server.output_dir,
+            self.server.data_dir / "source_feedback_report.json",
+            feedback_report_path=self.server.data_dir / "feedback_report.json",
+            sources_path=self.server.data_dir / "sources.yaml",
+        )
         self._redirect("/feedback-board")
 
     def _publish_task(self, form: dict[str, list[str]]) -> None:
@@ -1544,6 +1568,41 @@ def _feedback_source_suggestions_html(items: Any) -> str:
             f"<p><span class='pill'>平均分: {_escape(item.get('average_score', '-'))}</span></p>"
             f"<p>{_escape(item.get('suggestion', ''))}</p>"
             f"<p class='muted'>{_escape(item.get('reason', ''))}</p>"
+            "</div>"
+        )
+    return f"<div class='grid'>{''.join(cards)}</div>"
+
+
+def _source_feedback_suggestions_html(items: Any) -> str:
+    if not isinstance(items, list) or not items:
+        return "<p class='muted'>暂无源池反馈建议。点击“生成源池反馈建议”后会写入 dry-run 报告。</p>"
+    cards = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+        evidence = item.get("evidence_tasks") if isinstance(item.get("evidence_tasks"), list) else []
+        reason_html = "".join(f"<li>{_escape(reason)}</li>" for reason in reasons if str(reason).strip())
+        evidence_html = "".join(
+            "<li>"
+            f"{_escape(task.get('task_id', '-'))} · {_escape(task.get('platform', '-'))} · "
+            f"score {_escape(task.get('performance_score', 0))} · metrics {_escape(task.get('has_metrics', False))}"
+            "</li>"
+            for task in evidence
+            if isinstance(task, dict)
+        )
+        related = ", ".join(str(content_id) for content_id in item.get("related_content_ids", []) if str(content_id).strip())
+        cards.append(
+            "<div class='item'>"
+            f"<strong>{_escape(item.get('source_name') or item.get('source_key') or '-')}</strong>"
+            f"<p><span class='pill'>{_escape(item.get('action', '-'))}</span>"
+            f"<span class='pill'>类型: {_escape(item.get('source_type', '-'))}</span>"
+            f"<span class='pill'>平均分: {_escape(item.get('avg_performance_score', 0))}</span>"
+            f"<span class='pill'>建议调整: {_escape(item.get('recommended_weight_delta', 0))}</span></p>"
+            f"<p class='muted'>source_key: {_escape(item.get('source_key', '-'))}</p>"
+            f"<p class='muted'>关联内容：{_escape(related or '-')}</p>"
+            f"<h4>原因</h4><ul>{reason_html or '<li>暂无。</li>'}</ul>"
+            f"<h4>证据任务</h4><ul>{evidence_html or '<li>暂无。</li>'}</ul>"
             "</div>"
         )
     return f"<div class='grid'>{''.join(cards)}</div>"

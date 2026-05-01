@@ -114,6 +114,7 @@ def _normalize_source(item: Any) -> dict[str, Any]:
         "note": str(item.get("note") or "").strip(),
         "priority": _as_int(item.get("priority"), default=3),
         "discovery_method": str(item.get("discovery_method") or "").strip(),
+        "feedback_weight": _as_float(item.get("feedback_weight"), default=0.0),
     }
     if urls:
         normalized["url"] = next(iter(urls.values()))
@@ -180,6 +181,13 @@ def _url_links(source: dict[str, Any]) -> list[dict[str, str]]:
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 

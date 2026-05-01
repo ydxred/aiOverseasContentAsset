@@ -61,6 +61,11 @@ def score_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         score += 10
         reasons.append("+10 trusted_seed")
 
+    feedback_adjustment = _feedback_adjustment(_get_nested(candidate, ("discovered_from", "feedback_weight")))
+    if feedback_adjustment:
+        score += feedback_adjustment
+        reasons.append(f"{feedback_adjustment:+d} source_feedback_weight")
+
     stars = _as_int(signals.get("stars"), default=0)
     forks = _as_int(signals.get("forks"), default=0)
     if stars >= 10_000:
@@ -179,6 +184,15 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _feedback_adjustment(value: Any) -> int:
+    try:
+        weight = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    # Source feedback is intentionally small so it cannot dominate intrinsic candidate quality.
+    return int(round(max(-0.2, min(0.2, weight)) * 20))
 
 
 def _updated_recently(value: str, *, days: int) -> bool:

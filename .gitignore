@@ -18,6 +18,8 @@ content_asset_mvp/workspace/
 content_asset_mvp/output/
 content_asset_mvp/data/candidate_sources.json
 content_asset_mvp/data/feedback_report.json
+content_asset_mvp/data/source_feedback_report.json
+content_asset_mvp/data/source_feedback_audit.json
 
 *.mp4
 *.mp3

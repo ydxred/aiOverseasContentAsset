@@ -531,6 +531,7 @@ def _candidate(
             "name": source.get("name", ""),
             "source_type": source.get("source_type", ""),
             "trust_score": source.get("trust_score", 0),
+            "feedback_weight": source.get("feedback_weight", 0.0),
         },
         "discovery_method": "mock" if signals and signals.get("mock") else source.get("discovery_method", "source_discovery"),
         "reason": reason,
