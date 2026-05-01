@@ -12,6 +12,16 @@ STATUSES = ["pending_review", "ready", "needs_revision", "scheduled", "published
 PRIORITIES = ["low", "normal", "high", "urgent"]
 METRIC_KEYS = ["views", "likes", "comments", "favorites", "shares"]
 MANUAL_FIELDS = {"status", "priority", "scheduled_at", "account", "publish_url", "published_at", "metrics", "note"}
+STATUS_SORT_RANK = {
+    "ready": 0,
+    "scheduled": 1,
+    "pending_review": 2,
+    "needs_revision": 3,
+    "not_suitable": 4,
+    "published": 5,
+    "rejected": 6,
+}
+PRIORITY_SORT_RANK = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
 
 
 def generate_publish_tasks(content_id: str, package_dir: Path) -> list[dict[str, Any]]:
@@ -87,6 +97,23 @@ def load_all_publish_tasks(output_dir: Path) -> list[dict[str, Any]]:
     return tasks
 
 
+def filter_and_sort_publish_tasks(
+    tasks: list[dict[str, Any]],
+    *,
+    status: str = "",
+    platform: str = "",
+    sort_by: str = "recommended",
+) -> list[dict[str, Any]]:
+    filtered = []
+    for task in tasks:
+        if status and task.get("status") != status:
+            continue
+        if platform and task.get("platform") != platform:
+            continue
+        filtered.append(task)
+    return sorted(filtered, key=lambda task: _task_sort_key(task, sort_by))
+
+
 def update_publish_task(output_dir: Path, task_id: str, updates: dict[str, Any]) -> dict[str, Any]:
     package_dir = _find_task_package(output_dir, task_id)
     tasks = load_publish_tasks(package_dir)
@@ -111,6 +138,32 @@ def update_publish_task(output_dir: Path, task_id: str, updates: dict[str, Any])
 
 def make_task_id(content_id: str, platform: str) -> str:
     return f"{content_id}__{platform}"
+
+
+def _task_sort_key(task: dict[str, Any], sort_by: str) -> tuple[Any, ...]:
+    status = str(task.get("status") or "pending_review")
+    priority = str(task.get("priority") or "normal")
+    platform = str(task.get("platform") or "")
+    scheduled_at = str(task.get("scheduled_at") or "")
+    content_id = str(task.get("content_id") or "")
+    metrics = _normalize_metrics(task.get("metrics"))
+    if sort_by == "scheduled_at":
+        return (0 if scheduled_at else 1, scheduled_at, STATUS_SORT_RANK.get(status, 99), platform, content_id)
+    if sort_by == "priority":
+        return (PRIORITY_SORT_RANK.get(priority, 99), STATUS_SORT_RANK.get(status, 99), scheduled_at or "9999", platform, content_id)
+    if sort_by == "platform":
+        return (list(PLATFORMS).index(platform) if platform in PLATFORMS else 99, STATUS_SORT_RANK.get(status, 99), content_id)
+    if sort_by == "performance":
+        engagement = metrics["likes"] + metrics["comments"] + metrics["favorites"] + metrics["shares"]
+        return (-metrics["views"], -engagement, STATUS_SORT_RANK.get(status, 99), platform, content_id)
+    return (
+        STATUS_SORT_RANK.get(status, 99),
+        PRIORITY_SORT_RANK.get(priority, 99),
+        0 if scheduled_at else 1,
+        scheduled_at or "9999",
+        list(PLATFORMS).index(platform) if platform in PLATFORMS else 99,
+        content_id,
+    )
 
 
 def _find_task_package(output_dir: Path, task_id: str) -> Path:

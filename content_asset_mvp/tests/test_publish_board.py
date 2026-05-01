@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 from app.main import main
 from app.platform_publish import PLATFORMS, generate_platform_publish_package
-from app.publish_board import generate_publish_tasks, load_publish_tasks
+from app.publish_board import filter_and_sort_publish_tasks, generate_publish_tasks, load_publish_tasks
 from app.web import build_server
 
 
@@ -62,6 +62,21 @@ def test_generate_publish_tasks_preserves_manual_fields(tmp_path: Path) -> None:
     assert preserved["note"] == "人工已排期"
 
 
+def test_filter_and_sort_publish_tasks_prioritizes_actionable_items() -> None:
+    tasks = [
+        {"task_id": "a", "status": "published", "priority": "urgent", "platform": "douyin", "content_id": "demo"},
+        {"task_id": "b", "status": "pending_review", "priority": "normal", "platform": "bilibili", "content_id": "demo"},
+        {"task_id": "c", "status": "ready", "priority": "high", "platform": "kuaishou", "content_id": "demo"},
+        {"task_id": "d", "status": "scheduled", "priority": "urgent", "scheduled_at": "2026-05-02 20:00", "platform": "douyin", "content_id": "demo"},
+    ]
+
+    sorted_tasks = filter_and_sort_publish_tasks(tasks)
+
+    assert [task["task_id"] for task in sorted_tasks] == ["c", "d", "b", "a"]
+    assert [task["task_id"] for task in filter_and_sort_publish_tasks(tasks, status="scheduled")] == ["d"]
+    assert [task["task_id"] for task in filter_and_sort_publish_tasks(tasks, platform="douyin", sort_by="priority")] == ["d", "a"]
+
+
 def test_cli_generates_all_publish_tasks(tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     workspace_dir = tmp_path / "workspace"
@@ -101,6 +116,9 @@ def test_web_publish_board_renders_and_updates_task(tmp_path: Path) -> None:
             html = response.read().decode("utf-8")
         assert "发布审核与排期中心" in html
         assert "刷新全部发布任务" in html
+        assert "排序与筛选" in html
+        assert "运营优先级" in html
+        assert "应用排序/筛选" in html
         assert "保存任务" in html
         assert "douyin" in html
         assert "抖音" in html
@@ -109,6 +127,11 @@ def test_web_publish_board_renders_and_updates_task(tmp_path: Path) -> None:
         assert "B站" in html
         assert "小红书" in html
         assert "views" in html
+
+        with urlopen(f"http://{host}:{port}/publish-board?platform=douyin&status=pending_review&sort=platform", timeout=5) as response:
+            filtered_html = response.read().decode("utf-8")
+        assert "当前显示 1 / 5 条任务" in filtered_html
+        assert "douyin" in filtered_html
 
         payload = urlencode(
             {

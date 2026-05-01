@@ -19,7 +19,15 @@ from .github_auth import github_auth_status
 from .github_collector import make_github_content_id
 from .main import build_parser, run_pipeline
 from .platform_publish import PLATFORMS, generate_platform_publish_package
-from .publish_board import METRIC_KEYS, PRIORITIES, STATUSES, generate_publish_tasks_all, load_all_publish_tasks, update_publish_task
+from .publish_board import (
+    METRIC_KEYS,
+    PRIORITIES,
+    STATUSES,
+    filter_and_sort_publish_tasks,
+    generate_publish_tasks_all,
+    load_all_publish_tasks,
+    update_publish_task,
+)
 from .publish_review import load_publish_review, update_publish_review
 from .source_discovery import candidate_stats, discover_sources, load_candidate_pool
 from .source_manager import generate_discovery_links, group_sources_by_type, load_sources, source_stats
@@ -342,7 +350,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_html(self._videos())
                 return
             if parsed.path == "/publish-board":
-                self._send_html(self._publish_board())
+                self._send_html(self._publish_board(parse_qs(parsed.query)))
                 return
             if parsed.path == "/sources":
                 self._send_html(self._sources())
@@ -813,8 +821,12 @@ class WebHandler(BaseHTTPRequestHandler):
 <div class="video-list">{''.join(items)}</div>"""
         return _layout("成片库", body)
 
-    def _publish_board(self) -> str:
+    def _publish_board(self, query: dict[str, list[str]] | None = None) -> str:
+        query = query or {}
         tasks = load_all_publish_tasks(self.server.output_dir)
+        selected_status = _form_value(query, "status", "")
+        selected_platform = _form_value(query, "platform", "")
+        selected_sort = _form_value(query, "sort", "recommended")
         status_counts = {status: 0 for status in STATUSES}
         platform_counts = {platform: 0 for platform in PLATFORMS}
         for task in tasks:
@@ -829,7 +841,29 @@ class WebHandler(BaseHTTPRequestHandler):
             f"<span class='pill'>{_escape(PLATFORMS[platform]['platform_name'])}: {_escape(platform_counts[platform])}</span>"
             for platform in PLATFORMS
         )
-        task_cards = "".join(_publish_task_card(task) for task in tasks)
+        visible_tasks = filter_and_sort_publish_tasks(
+            tasks,
+            status=selected_status,
+            platform=selected_platform,
+            sort_by=selected_sort,
+        )
+        task_cards = "".join(_publish_task_card(task) for task in visible_tasks)
+        status_options = '<option value="">全部状态</option>' + "".join(
+            _select_option(status, status, selected_status) for status in STATUSES
+        )
+        platform_options = '<option value="">全部平台</option>' + "".join(
+            _select_option(platform, PLATFORMS[platform]["platform_name"], selected_platform) for platform in PLATFORMS
+        )
+        sort_options = "".join(
+            _select_option(value, label, selected_sort)
+            for value, label in [
+                ("recommended", "运营优先级：状态 -> 优先级 -> 排期 -> 平台"),
+                ("scheduled_at", "排期时间优先"),
+                ("priority", "优先级优先"),
+                ("platform", "平台分组"),
+                ("performance", "表现数据优先"),
+            ]
+        )
         empty_html = "<p class='muted'>还没有 publish_tasks.json。请先刷新全部发布任务，系统会基于已有 platform_publish_package.json 补齐每个平台的发布任务。</p>"
         body = f"""<div class="card">
   <h1>发布审核与排期中心</h1>
@@ -839,6 +873,25 @@ class WebHandler(BaseHTTPRequestHandler):
   </form>
   <p>{status_summary}</p>
   <p>{platform_summary}</p>
+</div>
+<div class="card">
+  <h2>排序与筛选</h2>
+  <form method="get" action="/publish-board">
+    <div class="grid">
+      <label>状态筛选
+        <select name="status">{status_options}</select>
+      </label>
+      <label>平台筛选
+        <select name="platform">{platform_options}</select>
+      </label>
+      <label>排序方式
+        <select name="sort">{sort_options}</select>
+      </label>
+    </div>
+    <button type="submit">应用排序/筛选</button>
+    <a class="button secondary" href="/publish-board">重置</a>
+  </form>
+  <p class="muted">当前显示 {len(visible_tasks)} / {len(tasks)} 条任务。默认排序把最该处理的任务排在前面：ready、scheduled、pending_review 优先，再看 urgent/high 优先级和排期时间。</p>
 </div>
 <div class="video-list">{task_cards or empty_html}</div>"""
         return _layout("发布看板", body)
