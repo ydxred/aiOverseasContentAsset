@@ -1,0 +1,2 @@
+"""Content asset MVP package."""
+

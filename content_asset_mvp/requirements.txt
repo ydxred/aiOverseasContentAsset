@@ -1,0 +1,13 @@
+yt-dlp
+youtube-transcript-api
+openai
+anthropic
+google-generativeai
+python-dotenv
+pydub
+PyYAML
+playwright
+psycopg[binary]
+pytest
+imageio-ffmpeg
+

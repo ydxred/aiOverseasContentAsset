@@ -1,0 +1,12 @@
+templates:
+  - template_id: default_explainer
+    aspect_ratio: "9:16"
+    font_family: default
+    primary_color: "#FFFFFF"
+    accent_color: "#FFD166"
+    background_type: image_or_video
+    subtitle_style: large_center_bottom
+    keyword_highlight: true
+    progress_bar: true
+    bgm_enabled: false
+

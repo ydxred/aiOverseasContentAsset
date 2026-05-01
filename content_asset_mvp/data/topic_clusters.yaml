@@ -1,0 +1,77 @@
+topic_clusters:
+  - id: ai_content_production
+    name: AI content production
+    description: Tools, workflows, and risks around AI-assisted content creation.
+    priority: high
+    search_keywords:
+      - AI content operations
+      - AI video workflow
+      - AI research assistant workflow
+    domestic_gap_check:
+      - AI 内容运营
+      - AI 视频工作流
+      - AI 资料搜集流程
+  - id: overseas_productivity
+    name: Overseas productivity methods
+    description: Practical methods that can be adapted for Chinese audiences.
+    priority: medium
+    search_keywords:
+      - creator productivity system
+      - second brain for creators
+      - AI productivity workflow
+    domestic_gap_check:
+      - 创作者效率系统
+      - AI 效率工作流
+  - id: ai_agents_for_solo_founders
+    name: AI agents for solo founders
+    description: Agent workflows used by solo founders, indie hackers, and small teams.
+    priority: high
+    search_keywords:
+      - AI agent workflow for solo founders
+      - AI agent for indie hackers
+      - solo founder AI tools
+      - AI automation startup idea
+    domestic_gap_check:
+      - AI agent 独立开发
+      - AI 自动化创业
+      - 独立开发 AI 工具
+  - id: micro_saas_cases
+    name: Micro SaaS case studies
+    description: Bootstrapped SaaS products, niche software, pricing, growth, and founder stories.
+    priority: high
+    search_keywords:
+      - micro SaaS case study
+      - bootstrapped SaaS growth
+      - B2B SaaS founder story
+      - productized SaaS idea
+    domestic_gap_check:
+      - micro SaaS 案例
+      - 小型 SaaS 增长
+      - 独立开发 SaaS
+  - id: automation_business
+    name: Automation business workflows
+    description: n8n, Make, Zapier, AI agents, and productized automation services.
+    priority: high
+    search_keywords:
+      - n8n AI automation business
+      - Make.com AI workflow
+      - Zapier AI agent workflow
+      - productized automation service
+    domestic_gap_check:
+      - n8n AI 自动化
+      - Make AI 工作流
+      - 自动化服务产品化
+  - id: overseas_tool_launches
+    name: Overseas tool launches
+    description: New tools and product launches from Product Hunt, Hacker News, and builder communities.
+    priority: medium
+    search_keywords:
+      - Product Hunt AI tool launch
+      - new AI developer tool
+      - AI tool for small business
+      - Hacker News AI startup
+    domestic_gap_check:
+      - 海外 AI 工具
+      - 新 AI 工具
+      - Product Hunt 工具
+
