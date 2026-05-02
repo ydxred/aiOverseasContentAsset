@@ -23,6 +23,8 @@ def test_generate_platform_publish_package_writes_json_and_markdown(tmp_path: Pa
     for asset in saved["platforms"].values():
         assert set(asset) == {
             "platform_name",
+            "priority",
+            "publish_stage",
             "content_fit",
             "video_length",
             "key_metrics",
@@ -43,6 +45,8 @@ def test_generate_platform_publish_package_writes_json_and_markdown(tmp_path: Pa
         assert "【话题】" in asset["copy_block"]
         assert "【首评/置顶评论】" in asset["copy_block"]
         assert asset["content_fit"]
+        assert isinstance(asset["priority"], int)
+        assert asset["publish_stage"]
         assert asset["video_length"]
         assert asset["key_metrics"]
         assert asset["focus"]
@@ -58,6 +62,21 @@ def test_low_confidence_package_requires_manual_review(tmp_path: Path) -> None:
         joined_risks = "\n".join(asset["manual_review_risks"])
         assert "发布前必须人工核查" in joined_notes
         assert "发布前必须人工核查" in joined_risks
+
+
+def test_platform_publish_copy_uses_observation_style_without_income_promises(tmp_path: Path) -> None:
+    package_dir = _write_package(tmp_path / "output", "demo")
+
+    package = generate_platform_publish_package("demo", package_dir)
+
+    banned = ["教你赚钱", "照做赚钱", "保证收益", "月入", "稳赚"]
+    joined = "\n".join(
+        "\n".join([asset["title"], asset["description"], asset["copy_block"]])
+        for asset in package["platforms"].values()
+    )
+    assert any(phrase in joined for phrase in ["为什么", "海外 AI 工具观察", "AI 商业机会", "开发者"])
+    for phrase in banned:
+        assert phrase not in joined
 
 
 def test_cli_generates_single_platform_package(tmp_path: Path) -> None:
@@ -134,7 +153,7 @@ def test_web_videos_and_output_show_platform_package_ui(tmp_path: Path) -> None:
         assert "微信视频号" in videos_html
         assert "B站" in videos_html
         assert "小红书" in videos_html
-        assert "标题和封面" in videos_html
+        assert "小红书当前先滞后处理" in videos_html
 
         with urlopen(f"http://{host}:{port}/outputs/demo", timeout=5) as response:
             detail_html = response.read().decode("utf-8")
@@ -147,6 +166,18 @@ def test_web_videos_and_output_show_platform_package_ui(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_xiaohongshu_is_deferred_not_primary(tmp_path: Path) -> None:
+    package_dir = _write_package(tmp_path / "output", "demo")
+
+    package = generate_platform_publish_package("demo", package_dir)
+    xiaohongshu = package["platforms"]["xiaohongshu"]
+
+    assert xiaohongshu["publish_stage"] == "deferred"
+    assert xiaohongshu["priority"] == 99
+    assert xiaohongshu["suitable"] is False
+    assert "滞后处理" in xiaohongshu["suitability_reason"]
 
 
 def test_web_generate_platform_package_button_writes_files(tmp_path: Path) -> None:
@@ -194,6 +225,7 @@ def _write_package(output_dir: Path, content_id: str, *, approved: bool = True, 
             {
                 "core_topic": "n8n 免费自动化工作流",
                 "summary": "这条内容解释 n8n playground 如何降低自动化工作流的上手门槛。",
+                "content_type": "ai_tool_explainer",
                 "main_points": ["免费创建实例", "快速搭建工作流", "发布前要核查官方限制"],
                 "facts_to_check": ["免费额度和注册条件是否仍然有效"],
                 "risk_points": ["不要把免费体验说成永久免费"],

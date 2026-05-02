@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .artifact_writer import ArtifactWriter
+from .content_positioning import normalize_analysis_positioning
 from .db import Database
 from .downloader import make_content_id
 from .llm_client import LLMClient
@@ -93,6 +94,7 @@ def analyze_youtube_candidate(
     analysis.setdefault("analysis_basis", payload["analysis_basis"])
     analysis.setdefault("transcript_status", payload["transcript_status"])
     analysis.setdefault("factual_confidence", factual_confidence)
+    analysis = normalize_analysis_positioning(analysis, source_type=str(meta.get("source_type") or "youtube_video"))
     if not has_transcript:
         facts_to_check = analysis.get("facts_to_check")
         if not isinstance(facts_to_check, list):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -51,12 +52,34 @@ def test_mock_github_pipeline_generates_key_artifacts(tmp_path: Path) -> None:
         "readme_images.json",
         "snapshot_status.json",
         "github_analysis.json",
+        "score.json",
+        "risk_report.json",
+        "opportunity_engine.json",
         "chinese_script.md",
         "title_options.md",
         "review_notes.md",
+        "quality_check.json",
+        "media_job.json",
+        "distribution.json",
+        "feedback_template.json",
+        "publish_review.json",
     ]:
         assert (package_dir / filename).exists()
     assert (package_dir / "meta.json").read_text(encoding="utf-8").find('"source_type": "github_repo"') != -1
+    analysis = json.loads((package_dir / "github_analysis.json").read_text(encoding="utf-8"))
+    score = json.loads((package_dir / "score.json").read_text(encoding="utf-8"))
+    opportunity = json.loads((package_dir / "opportunity_engine.json").read_text(encoding="utf-8"))
+    risk_report = json.loads((package_dir / "risk_report.json").read_text(encoding="utf-8"))
+    script = (package_dir / "chinese_script.md").read_text(encoding="utf-8")
+    assert analysis["content_type"] == "github_open_source_project"
+    assert "why_now" in analysis["opportunity_dimensions"]
+    assert "business_insight" in analysis
+    assert score["content_type"] == "github_open_source_project"
+    assert opportunity["content_type"] == "github_open_source_project"
+    assert "risk_level" in risk_report
+    assert "## 开发者为什么关注" not in script
+    assert "## 海外发生了什么" in script
+    assert "## 对中文用户/开发者/创作者/创业者的启发" in script
 
 
 def test_snapshotter_skips_when_playwright_missing(tmp_path: Path, monkeypatch) -> None:

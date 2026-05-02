@@ -10,6 +10,7 @@ import pytest
 
 from app.main import main, select_auto_candidate
 from app.web import build_server
+from app.generic_candidate import make_generic_candidate_content_id
 from app.youtube_analyzer import make_youtube_candidate_content_id
 from app.youtube_transcript import fetch_youtube_transcript
 
@@ -18,7 +19,7 @@ def test_cli_candidate_id_generates_youtube_review_package(tmp_path: Path, monke
     candidate = _youtube_candidate()
     monkeypatch.setattr(
         "app.youtube_transcript._fetch_transcript",
-        lambda video_id: ([{"start": 0.0, "duration": 2.0, "text": "OpenClaw helps content systems."}], "en", "preferred_language"),
+        lambda video_id: pytest.fail("mock candidate pipeline must not call youtube-transcript-api"),
     )
     candidate_path = tmp_path / "candidate_sources.json"
     candidate_path.write_text(json.dumps({"candidates": [candidate]}, ensure_ascii=False), encoding="utf-8")
@@ -63,10 +64,11 @@ def test_cli_candidate_id_generates_youtube_review_package(tmp_path: Path, monke
     assert meta["download_status"] == "metadata_only_candidate"
     assert meta["audio_path"] is None
     transcript = json.loads((package_dir / "youtube_transcript.json").read_text(encoding="utf-8"))
-    assert transcript["status"] == "fetched"
+    assert transcript["status"] == "skipped"
+    assert transcript["reason"] == "mock_mode"
     analysis = json.loads((package_dir / "analysis.json").read_text(encoding="utf-8"))
-    assert analysis["analysis_basis"] == "transcript"
-    assert analysis["factual_confidence"] == "higher_transcript_based"
+    assert analysis["analysis_basis"] == "metadata_only"
+    assert analysis["factual_confidence"] == "low_metadata_only"
     script = (package_dir / "chinese_script.md").read_text(encoding="utf-8")
     assert "# 口播稿" in script
     publish_review = json.loads((package_dir / "publish_review.json").read_text(encoding="utf-8"))
@@ -121,6 +123,62 @@ def test_web_candidate_package_button_and_route_generate_output(tmp_path: Path, 
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_cli_candidate_package_generates_generic_review_package(tmp_path: Path) -> None:
+    candidate = {
+        "candidate_id": "cand_product_hunt_ai",
+        "source_id": "product_hunt",
+        "source_type": "product_launch",
+        "name": "AI Launch Radar",
+        "url": "https://www.producthunt.com/posts/ai-launch-radar",
+        "category": "new_tools",
+        "discovered_from": {"name": "Product Hunt", "source_id": "product_hunt", "trust_score": 7},
+        "discovery_method": "Product Hunt AI launch discovery",
+        "reason": "Product Hunt AI launch with early adoption signal.",
+        "signals": {"platform": "product_hunt", "votes": 420, "comments": 36, "description": "AI tool launch"},
+        "score": 82,
+        "decision": "approve_candidate",
+        "status": "new",
+        "created_at": "2026-05-02T00:00:00Z",
+    }
+    candidate_path = tmp_path / "candidate_sources.json"
+    candidate_path.write_text(json.dumps({"candidates": [candidate]}, ensure_ascii=False), encoding="utf-8")
+    output_dir = tmp_path / "output"
+    workspace_dir = tmp_path / "workspace"
+
+    exit_code = main(
+        [
+            "--candidate-id",
+            candidate["candidate_id"],
+            "--candidate-path",
+            str(candidate_path),
+            "--mock",
+            "--output-dir",
+            str(output_dir),
+            "--workspace-dir",
+            str(workspace_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    package_dir = output_dir / make_generic_candidate_content_id(candidate)
+    for filename in [
+        "meta.json",
+        "generic_candidate.json",
+        "transcript_clean.json",
+        "analysis.json",
+        "score.json",
+        "risk_report.json",
+        "chinese_script.md",
+        "quality_check.json",
+        "publish_review.json",
+    ]:
+        assert (package_dir / filename).exists()
+    meta = json.loads((package_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source_type"] == "product_launch"
+    script = (package_dir / "chinese_script.md").read_text(encoding="utf-8")
+    assert "## 为什么突然值得关注" in script
 
 
 def test_auto_candidate_selection_prioritizes_youtube_then_decision_and_score() -> None:

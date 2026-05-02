@@ -180,7 +180,7 @@ def test_web_publish_board_renders_and_updates_task(tmp_path: Path) -> None:
         host, port = server.server_address
         with urlopen(f"http://{host}:{port}/publish-board", timeout=5) as response:
             html = response.read().decode("utf-8")
-        assert "发布审核与排期中心" in html
+        assert "分发审核与排期中心" in html
         assert "刷新全部发布任务" in html
         assert "排序与筛选" in html
         assert "运营优先级" in html

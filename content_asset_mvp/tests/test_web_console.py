@@ -54,9 +54,25 @@ def test_list_rendered_videos_collects_video_metadata(tmp_path: Path) -> None:
     (package_dir / "final_video.mp4").write_bytes(b"fake-video")
     (package_dir / "meta.json").write_text(json.dumps({"title": "测试成片", "source_type": "youtube_video"}, ensure_ascii=False), encoding="utf-8")
     (package_dir / "tts_status.json").write_text(json.dumps({"mode": "openai"}, ensure_ascii=False), encoding="utf-8")
-    (package_dir / "render_status.json").write_text(json.dumps({"subtitle_mode": "bilingual", "duration_seconds": 12.3}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "render_status.json").write_text(
+        json.dumps(
+            {"subtitle_mode": "bilingual", "duration_seconds": 12.3, "template_id": "overseas_ai_narrative_v1"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (package_dir / "brand_template.json").write_text(json.dumps({"brand_name": "Overseas AI Radar"}, ensure_ascii=False), encoding="utf-8")
     (package_dir / "subtitle_translation_status.json").write_text(json.dumps({"mode": "openai"}, ensure_ascii=False), encoding="utf-8")
     (package_dir / "publish_review.json").write_text(json.dumps({"status": "approved"}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "video_quality_report.json").write_text(
+        json.dumps({"video_quality_score": 82, "publish_ready": True, "blocking_reasons": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (package_dir / "visual_qc_report.json").write_text(json.dumps({"score": 78, "pass": True}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "remotion_status.json").write_text(
+        json.dumps({"status": "fallback", "render_engine_actual": "ffmpeg", "reason": "missing remotion"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     videos = list_rendered_videos(output_dir)
 
@@ -65,6 +81,14 @@ def test_list_rendered_videos_collects_video_metadata(tmp_path: Path) -> None:
     assert videos[0]["title"] == "测试成片"
     assert videos[0]["tts_mode"] == "openai"
     assert videos[0]["subtitle_mode"] == "bilingual"
+    assert videos[0]["template_id"] == "overseas_ai_narrative_v1"
+    assert videos[0]["brand_name"] == "Overseas AI Radar"
+    assert videos[0]["video_quality_score"] == 82
+    assert videos[0]["publish_ready"] is True
+    assert videos[0]["render_engine_actual"] == "ffmpeg"
+    assert videos[0]["visual_qc_score"] == 78
+    assert videos[0]["visual_qc_pass"] is True
+    assert videos[0]["remotion_status"] == "fallback"
     assert videos[0]["publish_status"] == "approved"
 
 
@@ -79,7 +103,24 @@ def test_status_page_renders() -> None:
         assert "系统状态" in html
         assert "DATABASE_URL" in html
         assert "yt-dlp" in html
-        assert "git status --short" in html
+        assert "git status --short" not in html
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_home_page_renders_new_positioning() -> None:
+    server = build_server("127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        with urlopen(f"http://{host}:{port}/", timeout=5) as response:
+            html = response.read().decode("utf-8")
+        assert "海外 AI 机会发现与中文叙事资产流水线" in html
+        assert "AI 工具/CLI/开源项目解读" in html
+        assert "收益承诺" in html
+        assert "生成中文叙事审核包" in html
     finally:
         server.shutdown()
         server.server_close()
@@ -127,6 +168,48 @@ def test_source_discovery_page_renders_auto_close_loop_button() -> None:
             html = response.read().decode("utf-8")
         assert "/auto-close-loop" in html
         assert "一键完整闭环" in html
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_source_discovery_page_prefers_database_candidates(tmp_path: Path) -> None:
+    class FakeDb:
+        def list_source_candidates(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "candidate_id": "db_candidate",
+                    "name": "DB First Candidate",
+                    "url": "https://example.com/db-first",
+                    "source_type": "product_launch",
+                    "score": 91,
+                    "decision": "approve_candidate",
+                    "status": "new",
+                    "signals": {},
+                    "discovered_from": {"name": "DB Source"},
+                }
+            ]
+
+        def sync_source_candidates(self, candidates: list[dict[str, object]]) -> None:
+            return None
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "candidate_sources.json").write_text(
+        json.dumps({"candidates": [{"candidate_id": "json_candidate", "name": "JSON Candidate"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    server = build_server("127.0.0.1", 0)
+    server.root_dir = tmp_path
+    server.db = FakeDb()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        with urlopen(f"http://{host}:{port}/source-discovery", timeout=5) as response:
+            html = response.read().decode("utf-8")
+        assert "DB First Candidate" in html
+        assert "JSON Candidate" not in html
     finally:
         server.shutdown()
         server.server_close()
@@ -239,8 +322,35 @@ def test_videos_page_renders_player_and_status(tmp_path: Path) -> None:
     (package_dir / "final_video.mp4").write_bytes(b"fake-video")
     (package_dir / "meta.json").write_text(json.dumps({"title": "测试成片", "source_type": "youtube_video"}, ensure_ascii=False), encoding="utf-8")
     (package_dir / "tts_status.json").write_text(json.dumps({"mode": "openai"}, ensure_ascii=False), encoding="utf-8")
-    (package_dir / "render_status.json").write_text(json.dumps({"subtitle_mode": "bilingual"}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "render_status.json").write_text(
+        json.dumps({"subtitle_mode": "bilingual", "template_id": "overseas_ai_narrative_v1", "visual_quality": "director_v3_large_scene"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (package_dir / "video_render_manifest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-05-02T09:30:00Z",
+                "video_version": "123456789",
+                "resource_dir": str(package_dir),
+                "render_parameters": {
+                    "subtitle_mode": "director_zh",
+                    "visual_quality": "director_v3_large_scene",
+                    "tts_mode": "openai",
+                    "translation_mode": "openai",
+                    "duration_seconds": 12.3,
+                    "video_quality_score": 79,
+                    "publish_ready": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     (package_dir / "subtitle_translation_status.json").write_text(json.dumps({"mode": "openai"}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "video_quality_report.json").write_text(
+        json.dumps({"video_quality_score": 79, "publish_ready": False, "blocking_reasons": ["素材类型不足"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     server = build_server("127.0.0.1", 0)
     server.output_dir = output_dir
@@ -253,9 +363,18 @@ def test_videos_page_renders_player_and_status(tmp_path: Path) -> None:
         assert "成片库" in html
         assert "测试成片" in html
         assert "<video" in html
-        assert "/artifact/demo/final_video.mp4" in html
+        assert "/artifact/demo/final_video.mp4?v=123456789" in html
+        assert "生成时间：2026-05-02T09:30:00Z" in html
+        assert "video_version=123456789" in html
+        assert "资源目录：" in html
+        assert "生成参数" in html
         assert "TTS: openai" in html
-        assert "字幕: bilingual" in html
+        assert "字幕: director_zh" in html
+        assert "模板: overseas_ai_narrative_v1" in html
+        assert "视觉: director_v3_large_scene" in html
+        assert "质量分: 79" in html
+        assert "publish_ready: False" in html
+        assert "阻断原因：素材类型不足" in html
     finally:
         server.shutdown()
         server.server_close()
@@ -267,6 +386,46 @@ def test_output_detail_embeds_video_preview(tmp_path: Path) -> None:
     package_dir.mkdir(parents=True)
     (package_dir / "chinese_script.md").write_text("# 口播稿\n\n测试。", encoding="utf-8")
     (package_dir / "final_video.mp4").write_bytes(b"fake-video")
+    (package_dir / "video_render_manifest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-05-02T09:30:00Z",
+                "video_version": "987654321",
+                "resource_dir": str(package_dir),
+                "render_parameters": {
+                    "subtitle_mode": "director_zh",
+                    "visual_quality": "director_v3_large_scene",
+                    "template_id": "overseas_ai_narrative_v1",
+                    "director_style": "video_director_v4",
+                    "edit_template": "github_tool_explainer_v4",
+                    "shot_count": 14,
+                    "video_quality_score": 76,
+                    "publish_ready": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (package_dir / "video_quality_report.json").write_text(
+        json.dumps(
+            {
+                "video_quality_score": 76,
+                "visual_density_score": 88,
+                "asset_diversity_score": 60,
+                "subtitle_quality_score": 86,
+                "voice_quality_score": 25,
+                "hook_strength_score": 86,
+                "publish_ready": False,
+                "blocking_reasons": ["Voice is offline silence/TTS fallback; publish requires real narration."],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (package_dir / "shot_list.json").write_text(json.dumps({"shots": []}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "edit_decisions.json").write_text(json.dumps({"template_id": "github_tool_explainer_v4"}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "visual_asset_pack.json").write_text(json.dumps({"assets": []}, ensure_ascii=False), encoding="utf-8")
 
     server = build_server("127.0.0.1", 0)
     server.output_dir = output_dir
@@ -278,8 +437,18 @@ def test_output_detail_embeds_video_preview(tmp_path: Path) -> None:
             html = response.read().decode("utf-8")
         assert "成片预览" in html
         assert "<video" in html
-        assert "/artifact/demo/final_video.mp4" in html
+        assert "/artifact/demo/final_video.mp4?v=987654321" in html
         assert "返回成片库" in html
+        assert "视频生成参数" in html
+        assert "2026-05-02T09:30:00Z" in html
+        assert "video_render_manifest.json" in html
+        assert "视频质量报告" in html
+        assert "video_quality_report.json" in html
+        assert "shot_list.json" in html
+        assert "edit_decisions.json" in html
+        assert "visual_asset_pack.json" in html
+        assert "github_tool_explainer_v4" in html
+        assert "shot_count" in html
     finally:
         server.shutdown()
         server.server_close()

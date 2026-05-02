@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +19,9 @@ from .github_auth import get_github_token
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search_by_date"
 YOUTUBE_DISCOVERY_SOURCE_TYPES = {"creator", "youtube_channel", "keyword"}
+WEB_DISCOVERY_SOURCE_TYPES = {"product_hunt", "community", "blog", "newsletter"}
 
 
 def default_candidate_sources_path() -> Path:
@@ -138,6 +142,8 @@ def _mock_discovery(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     ),
                 ]
             )
+        if source.get("source_type") in WEB_DISCOVERY_SOURCE_TYPES:
+            candidates.extend(_mock_web_candidates(source))
         if source.get("source_type") in {"github_trending", "keyword"}:
             candidates.extend(_mock_github_keyword_candidates(source))
         if source.get("source_type") == "github_org":
@@ -195,6 +201,8 @@ def _real_discovery(sources: list[dict[str, Any]], *, limit: int | None = None) 
                 candidates.extend(_discover_github_search(source, per_query=3))
             elif source_type == "creator":
                 candidates.extend(_creator_link_candidates(source))
+            elif source_type in WEB_DISCOVERY_SOURCE_TYPES:
+                candidates.extend(_discover_web_source(source, per_source=3))
         except DiscoveryError as exc:
             errors.append({"source_id": source.get("source_id"), "error": str(exc), "status": exc.status})
         if limit is not None and limit > 0 and len(candidates) >= limit:
@@ -267,6 +275,77 @@ def _discover_youtube_search(source: dict[str, Any], *, api_key: str, per_query:
     ]
 
 
+def _discover_web_source(source: dict[str, Any], *, per_source: int) -> list[dict[str, Any]]:
+    source_type = str(source.get("source_type") or "")
+    if source_type == "community" and "hacker" in str(source.get("name", "")).lower():
+        return _discover_hacker_news(source, per_source=per_source)
+    return _discover_web_links(source, per_source=per_source)
+
+
+def _discover_hacker_news(source: dict[str, Any], *, per_source: int) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for query in _web_queries_for_source(source)[:3]:
+        params = {"query": query, "tags": "story", "hitsPerPage": str(per_source)}
+        data = _http_json(f"{HN_SEARCH_URL}?{urlencode(params)}", user_agent="content-asset-hn-discovery")
+        hits = data.get("hits", []) if isinstance(data, dict) else []
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            title = html.unescape(str(hit.get("title") or hit.get("story_title") or "Hacker News discussion"))
+            object_id = str(hit.get("objectID") or "")
+            url = str(hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}")
+            candidates.append(
+                _candidate(
+                    source,
+                    title,
+                    url,
+                    "community_thread",
+                    f"Hacker News discussion discovered via Algolia search for '{query}'.",
+                    signals={
+                        "platform": "hacker_news",
+                        "object_id": object_id,
+                        "points": _as_int(hit.get("points")),
+                        "comments": _as_int(hit.get("num_comments")),
+                        "author": hit.get("author", ""),
+                        "published_at": hit.get("created_at", ""),
+                        "updated_at": hit.get("created_at", ""),
+                        "description": _strip_html(str(hit.get("story_text") or ""))[:500],
+                        "keywords": _web_signal_keywords(source, title, query),
+                    },
+                )
+            )
+    return candidates
+
+
+def _discover_web_links(source: dict[str, Any], *, per_source: int) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for label, url in _seed_urls_for_web_source(source):
+        try:
+            page = _http_text(url)
+        except DiscoveryError:
+            continue
+        links = _extract_links(page, base_url=url)
+        for link_title, link_url in links[:per_source]:
+            candidate_type = _web_candidate_type(source)
+            candidates.append(
+                _candidate(
+                    source,
+                    link_title,
+                    link_url,
+                    candidate_type,
+                    f"{source.get('name', 'Web source')} link discovered from {label}.",
+                    signals={
+                        "platform": source.get("source_type"),
+                        "source_label": label,
+                        "updated_at": _now_iso(),
+                        "description": f"Discovered from {url}",
+                        "keywords": _web_signal_keywords(source, link_title, label),
+                    },
+                )
+            )
+    return candidates
+
+
 def _youtube_api_json(base_url: str, params: dict[str, str]) -> Any:
     request = Request(f"{base_url}?{urlencode(params)}", headers={"User-Agent": "content-asset-youtube-discovery"})
     try:
@@ -276,6 +355,28 @@ def _youtube_api_json(base_url: str, params: dict[str, str]) -> Any:
         raise DiscoveryError(f"YouTube Data API returned {exc.code}", status=exc.code) from exc
     except (URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise DiscoveryError(f"YouTube discovery failed: {exc}") from exc
+
+
+def _http_json(url: str, *, user_agent: str) -> Any:
+    request = Request(url, headers={"User-Agent": user_agent})
+    try:
+        with urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise DiscoveryError(f"HTTP JSON discovery returned {exc.code}", status=exc.code) from exc
+    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise DiscoveryError(f"HTTP JSON discovery failed: {exc}") from exc
+
+
+def _http_text(url: str) -> str:
+    request = Request(url, headers={"User-Agent": "content-asset-web-discovery"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            return response.read().decode("utf-8", errors="ignore")
+    except HTTPError as exc:
+        raise DiscoveryError(f"Web discovery returned {exc.code}", status=exc.code) from exc
+    except (URLError, TimeoutError) as exc:
+        raise DiscoveryError(f"Web discovery failed: {exc}") from exc
 
 
 def _candidate_from_youtube_video(source: dict[str, Any], video: dict[str, Any], *, query: str) -> dict[str, Any]:
@@ -405,6 +506,43 @@ def _mock_youtube_candidates(source: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _mock_web_candidates(source: dict[str, Any]) -> list[dict[str, Any]]:
+    source_type = str(source.get("source_type") or "")
+    if source_type == "product_hunt":
+        return [
+            _candidate(
+                source,
+                "Mock Product Hunt AI launch",
+                "https://www.producthunt.com/posts/mock-ai-launch",
+                "product_launch",
+                "Mock Product Hunt AI launch discovered from daily products.",
+                signals={"mock": True, "platform": "product_hunt", "votes": 420, "comments": 36, "updated_at": _now_iso(), "keywords": ["AI tools", "launch"]},
+            )
+        ]
+    if source_type == "community":
+        return [
+            _candidate(
+                source,
+                "Show HN: Mock AI agent workflow tool",
+                "https://news.ycombinator.com/item?id=123456",
+                "community_thread",
+                "Mock community thread with developer discussion signal.",
+                signals={"mock": True, "platform": "hacker_news", "points": 180, "comments": 64, "updated_at": _now_iso(), "keywords": ["Show HN", "AI agent"]},
+            )
+        ]
+    candidate_type = "newsletter_issue" if source_type == "newsletter" else "blog_article"
+    return [
+        _candidate(
+            source,
+            f"Mock {source.get('name', 'source')} AI opportunity article",
+            str((source.get("urls") or {}).get("website") or (source.get("urls") or {}).get("newsletter") or "https://example.com/ai-opportunity"),
+            candidate_type,
+            "Mock article/newsletter candidate for offline web-source discovery validation.",
+            signals={"mock": True, "platform": source_type, "updated_at": _now_iso(), "keywords": source.get("watch_keywords", [])},
+        )
+    ]
+
+
 def _creator_link_candidates(source: dict[str, Any]) -> list[dict[str, Any]]:
     if source.get("source_type") != "creator":
         return []
@@ -425,6 +563,89 @@ def _creator_link_candidates(source: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
     return candidates
+
+
+def _seed_urls_for_web_source(source: dict[str, Any]) -> list[tuple[str, str]]:
+    urls = source.get("urls") if isinstance(source.get("urls"), dict) else {}
+    preferred_keys = ("ai", "newest", "newsletter", "website")
+    result: list[tuple[str, str]] = []
+    for key in preferred_keys:
+        url = urls.get(key)
+        if url:
+            result.append((key, str(url)))
+    return result
+
+
+def _web_candidate_type(source: dict[str, Any]) -> str:
+    source_type = str(source.get("source_type") or "")
+    if source_type == "product_hunt":
+        return "product_launch"
+    if source_type == "community":
+        return "community_thread"
+    if source_type == "newsletter":
+        return "newsletter_issue"
+    return "blog_article"
+
+
+def _web_queries_for_source(source: dict[str, Any]) -> list[str]:
+    queries = [str(item) for item in source.get("watch_keywords", []) if str(item).strip()]
+    if not queries:
+        queries = [str(source.get("name") or "AI tool")]
+    return _unique(queries)
+
+
+def _web_signal_keywords(source: dict[str, Any], title: str, query: str) -> list[str]:
+    values = [query, title, str(source.get("source_type") or ""), "AI", "tool", "startup", "business", "developer"]
+    values.extend(str(item) for item in source.get("watch_keywords", []) if item)
+    return _unique(values)
+
+
+def _extract_links(page: str, *, base_url: str) -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
+    for match in re.finditer(r"<a\s+[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", page, flags=re.IGNORECASE | re.DOTALL):
+        href = html.unescape(match.group(1)).strip()
+        title = _strip_html(match.group(2))
+        if not href or not title or len(title) < 4:
+            continue
+        url = _absolute_url(href, base_url)
+        if not _looks_like_content_url(url):
+            continue
+        links.append((title[:160], url))
+    return _unique_link_pairs(links)
+
+
+def _absolute_url(href: str, base_url: str) -> str:
+    if href.startswith(("http://", "https://")):
+        return href
+    parsed = urlparse(base_url)
+    if href.startswith("/"):
+        return f"{parsed.scheme}://{parsed.netloc}{href}"
+    base_path = parsed.path.rsplit("/", 1)[0]
+    return f"{parsed.scheme}://{parsed.netloc}{base_path}/{href}"
+
+
+def _looks_like_content_url(url: str) -> bool:
+    lowered = url.lower()
+    blocked = ("#","/login","/signin","/signup","/pricing","/about","/privacy","/terms","/contact")
+    if any(token in lowered for token in blocked):
+        return False
+    return any(token in lowered for token in ("/posts/", "/item?id=", "/blog", "/p/", "/news", "/article", "/launch"))
+
+
+def _strip_html(value: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(html.unescape(text).split())
+
+
+def _unique_link_pairs(values: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for title, url in values:
+        key = url.lower().rstrip("/")
+        if key and key not in seen:
+            result.append((title, url))
+            seen.add(key)
+    return result
 
 
 def _should_discover_youtube(source: dict[str, Any]) -> bool:

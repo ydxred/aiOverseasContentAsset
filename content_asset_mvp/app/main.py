@@ -17,6 +17,7 @@ from .distribution_adapter import create_distribution_record
 from .downloader import build_local_audio_meta, fetch_metadata_and_audio, make_content_id, make_file_content_id
 from .feedback_collector import create_feedback_template
 from .feedback_analysis import generate_feedback_report
+from .generic_candidate import GENERIC_SOURCE_TYPES, build_generic_candidate_meta, make_generic_candidate_content_id
 from .github_analyzer import analyze_github_project
 from .github_collector import collect_github_repository, make_github_content_id
 from .llm_client import LLMClient
@@ -44,7 +45,17 @@ from .youtube_transcript import fetch_youtube_transcript
 STAGE_ORDER = ["meta", "transcript", "clean", "analysis", "score", "risk", "rewrite", "quality", "all"]
 AUTO_PROCESSABLE_STATUSES = {"new", "review", "pending", "queued"}
 AUTO_DECISION_PRIORITY = {"approve_candidate": 3, "review": 2}
-AUTO_SOURCE_TYPE_PRIORITY = {"youtube_video": 2, "github_repo": 1}
+AUTO_SOURCE_TYPE_PRIORITY = {
+    "youtube_video": 4,
+    "github_repo": 3,
+    "product_launch": 2,
+    "community_thread": 2,
+    "article": 1,
+    "blog_article": 1,
+    "newsletter_issue": 1,
+    "creator_project": 1,
+    "creator_link": 1,
+}
 CONTENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -141,7 +152,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         return 0
 
     if args.discover_sources:
-        result = discover_sources(mock=args.discovery_mock, limit=args.discovery_limit)
+        result = discover_sources(mock=args.discovery_mock, limit=args.discovery_limit, source_path=args.sources_path, candidate_path=args.candidate_path)
+        db.sync_source_candidates(load_candidate_pool(args.candidate_path).get("candidates", []))
         decisions = result["by_decision"]
         print(
             "Source discovery finished: "
@@ -176,6 +188,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             result = reject_candidate(candidate_id, args.review_reason, candidate_path=args.candidate_path)
         else:
             result = archive_candidate(candidate_id, args.review_reason, candidate_path=args.candidate_path)
+        db.sync_source_candidates(load_candidate_pool(args.candidate_path).get("candidates", []))
         print(
             "Candidate review finished: "
             f"action={action} "
@@ -313,6 +326,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
 
 def _run_github_pipeline(github_url: str, writer: ArtifactWriter, llm: LLMClient, db: Database, mock: bool, logger: object) -> int:
+    content_id = writer.output_dir.name
     meta = collect_github_repository(github_url, writer, mock=mock)
     db.upsert_content(meta, status="metadata_ready")
     for artifact_type, filename in [
@@ -321,18 +335,33 @@ def _run_github_pipeline(github_url: str, writer: ArtifactWriter, llm: LLMClient
         ("readme", "readme.md"),
         ("readme_images", "readme_images.json"),
     ]:
-        db.record_artifact(writer.output_dir.name, artifact_type, str(writer.output_path(filename)))
+        db.record_artifact(content_id, artifact_type, str(writer.output_path(filename)))
 
     snapshot_status = snapshot_github_repo(
         meta.get("html_url") or github_url,
         writer,
         skip_reason="Mock mode skips browser screenshots." if mock else None,
     )
-    db.record_artifact(writer.output_dir.name, "snapshot_status", str(writer.output_path("snapshot_status.json")))
+    db.record_artifact(content_id, "snapshot_status", str(writer.output_path("snapshot_status.json")))
 
     readme_markdown = writer.output_path("readme.md").read_text(encoding="utf-8")
     readme_images = writer.read_json("readme_images.json")
-    analyze_github_project(meta, readme_markdown, readme_images, snapshot_status, writer, llm, db)
+    analysis = analyze_github_project(meta, readme_markdown, readme_images, snapshot_status, writer, llm, db)
+    score = score_topic(analysis, writer)
+    db.record_artifact(content_id, "score", str(writer.output_path("score.json")))
+    risk_report = check_risk(meta, analysis, writer, llm, db)
+    opportunity = evaluate_opportunity(content_id, analysis, score, writer)
+    db.record_topic_opportunity(content_id, opportunity)
+    db.record_artifact(content_id, "opportunity_engine", str(writer.output_path("opportunity_engine.json")))
+    media_job = prepare_media_job(content_id, str(writer.output_path("chinese_script.md")), writer)
+    db.record_media_job(content_id, media_job)
+    db.record_artifact(content_id, "media_job", str(writer.output_path("media_job.json")))
+    create_distribution_record(content_id, writer)
+    db.record_artifact(content_id, "distribution", str(writer.output_path("distribution.json")))
+    feedback = create_feedback_template(content_id, writer)
+    db.record_feedback(content_id, feedback)
+    db.record_artifact(content_id, "feedback_template", str(writer.output_path("feedback_template.json")))
+    check_quality(meta, analysis, score, risk_report, writer, llm, db)
     ensure_publish_review(writer)
     logger.info("GitHub pipeline finished output_dir=%s", writer.output_dir)
     return 0
@@ -351,13 +380,18 @@ def _run_candidate_entry(args: argparse.Namespace, settings: object, llm: LLMCli
         if not url:
             raise SystemExit("GitHub candidate is missing url")
         exit_code = _run_github_pipeline(url, writer, llm, db, settings.mock, logger)
+    elif source_type == "youtube_video":
+        exit_code = _run_youtube_candidate_pipeline(candidate, writer, llm, db, settings.mock, logger)
+    elif source_type in GENERIC_SOURCE_TYPES:
+        exit_code = _run_generic_candidate_pipeline(candidate, writer, llm, db, logger)
     else:
-        exit_code = _run_youtube_candidate_pipeline(candidate, writer, llm, db, logger)
+        raise SystemExit(f"Unsupported candidate source_type: {source_type}")
 
     if exit_code == 0 and pool is not None:
         candidate["review_package_content_id"] = content_id
         candidate["review_package_generated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         save_candidate_pool(pool, pool_path)
+        db.sync_source_candidates(pool.get("candidates", []))
     print(f"Candidate package generated: candidate_id={candidate.get('candidate_id', '-')} content_id={content_id}")
     print(f"Output: {writer.output_dir}")
     return exit_code
@@ -435,7 +469,7 @@ def describe_auto_candidate_selection(candidate: dict[str, Any]) -> str:
     return (
         f"Selected {candidate.get('source_type')} candidate because it is processable, "
         f"decision={candidate.get('decision')}, score={candidate.get('score', 0)}. "
-        "Auto selection prioritizes youtube_video over github_repo, then decision and score."
+        "Auto selection prioritizes source types with richer automated evidence, then decision and score."
     )
 
 
@@ -470,6 +504,8 @@ def _candidate_content_id(candidate: dict[str, Any], *, explicit_content_id: str
         return make_github_content_id(url) if url else str(candidate.get("candidate_id"))
     if source_type == "youtube_video":
         return make_youtube_candidate_content_id(candidate)
+    if source_type in GENERIC_SOURCE_TYPES:
+        return make_generic_candidate_content_id(candidate)
     raise SystemExit(f"Unsupported candidate source_type: {source_type}")
 
 
@@ -485,6 +521,7 @@ def _run_youtube_candidate_pipeline(
     writer: ArtifactWriter,
     llm: LLMClient,
     db: Database,
+    mock: bool,
     logger: object,
 ) -> int:
     content_id = writer.output_dir.name
@@ -493,7 +530,7 @@ def _run_youtube_candidate_pipeline(
     db.record_artifact(content_id, "meta", str(writer.output_path("meta.json")))
     db.record_artifact(content_id, "youtube_candidate", str(writer.output_path("youtube_candidate.json")))
 
-    transcript_status = fetch_youtube_transcript(candidate, writer, mock=False)
+    transcript_status = fetch_youtube_transcript(candidate, writer, mock=mock)
     db.record_artifact(content_id, "youtube_transcript", str(writer.output_path("youtube_transcript.json")))
     db.record_artifact(content_id, "transcript_clean", str(writer.output_path("transcript_clean.json")))
     transcript_clean = writer.read_json("transcript_clean.json")
@@ -517,6 +554,43 @@ def _run_youtube_candidate_pipeline(
     check_quality(meta, analysis, score, risk_report, writer, llm, db)
     ensure_publish_review(writer)
     logger.info("YouTube candidate pipeline finished output_dir=%s", writer.output_dir)
+    return 0
+
+
+def _run_generic_candidate_pipeline(
+    candidate: dict[str, Any],
+    writer: ArtifactWriter,
+    llm: LLMClient,
+    db: Database,
+    logger: object,
+) -> int:
+    content_id = writer.output_dir.name
+    meta = build_generic_candidate_meta(candidate, writer)
+    db.upsert_content(meta, status="metadata_ready")
+    db.record_artifact(content_id, "meta", str(writer.output_path("meta.json")))
+    db.record_artifact(content_id, "generic_candidate", str(writer.output_path("generic_candidate.json")))
+    db.record_artifact(content_id, "transcript_clean", str(writer.output_path("transcript_clean.json")))
+    transcript_clean = writer.read_json("transcript_clean.json")
+
+    analysis = analyze_content(meta, transcript_clean, writer, llm, db)
+    score = score_topic(analysis, writer)
+    db.record_artifact(content_id, "score", str(writer.output_path("score.json")))
+    risk_report = check_risk(meta, analysis, writer, llm, db)
+    opportunity = evaluate_opportunity(content_id, analysis, score, writer)
+    db.record_topic_opportunity(content_id, opportunity)
+    db.record_artifact(content_id, "opportunity_engine", str(writer.output_path("opportunity_engine.json")))
+    rewrite_result = rewrite_script(meta, analysis, score, risk_report, writer, llm, db)
+    media_job = prepare_media_job(content_id, rewrite_result["script_path"], writer)
+    db.record_media_job(content_id, media_job)
+    db.record_artifact(content_id, "media_job", str(writer.output_path("media_job.json")))
+    create_distribution_record(content_id, writer)
+    db.record_artifact(content_id, "distribution", str(writer.output_path("distribution.json")))
+    feedback = create_feedback_template(content_id, writer)
+    db.record_feedback(content_id, feedback)
+    db.record_artifact(content_id, "feedback_template", str(writer.output_path("feedback_template.json")))
+    check_quality(meta, analysis, score, risk_report, writer, llm, db)
+    ensure_publish_review(writer)
+    logger.info("Generic candidate pipeline finished output_dir=%s", writer.output_dir)
     return 0
 
 
@@ -595,6 +669,12 @@ def _render_video(args: argparse.Namespace, settings: object, db: Database) -> i
         ("subtitle_translation_status", "subtitle_translation_status.json"),
         ("render_status", "render_status.json"),
         ("tts_status", "tts_status.json"),
+        ("director_plan", "director_plan.json"),
+        ("director_script", "director_script.md"),
+        ("director_quality_checklist", "director_quality_checklist.json"),
+        ("brand_template", "brand_template.json"),
+        ("cover", "cover.png"),
+        ("visual_asset", "visual_asset_card.png"),
         ("final_video", "final_video.mp4"),
         ("media_job", "media_job.json"),
     ]:
@@ -657,6 +737,8 @@ def _generate_publish_tasks(args: argparse.Namespace, settings: object) -> int:
     if not package_dir.exists():
         raise SystemExit(f"Output package not found: {content_id}")
     tasks = generate_publish_tasks(content_id, package_dir)
+    db = Database(settings.database_url, mock=settings.mock)
+    db.sync_publish_tasks(tasks)
     print(
         "Publish tasks generated: "
         f"content_id={content_id} "
@@ -668,6 +750,8 @@ def _generate_publish_tasks(args: argparse.Namespace, settings: object) -> int:
 
 def _generate_publish_tasks_all(settings: object) -> int:
     tasks = generate_publish_tasks_all(settings.output_dir)
+    db = Database(settings.database_url, mock=settings.mock)
+    db.sync_publish_tasks(tasks)
     content_count = len({task["content_id"] for task in tasks})
     print(f"Publish tasks generated: contents={content_count} tasks={len(tasks)} output_dir={settings.output_dir}")
     return 0
@@ -676,6 +760,8 @@ def _generate_publish_tasks_all(settings: object) -> int:
 def _generate_feedback_report(args: argparse.Namespace, settings: object) -> int:
     report_path = args.feedback_report_path or settings.root_dir / "data" / "feedback_report.json"
     report = generate_feedback_report(settings.output_dir, report_path)
+    db = Database(settings.database_url, mock=settings.mock)
+    db.sync_feedback_report(report)
     best_platform = report["best_platforms"][0]["platform_name"] if report.get("best_platforms") else "暂无"
     best_task = report["best_tasks"][0]["task_id"] if report.get("best_tasks") else "暂无"
     print(f"Feedback report generated: json={report_path}")
@@ -709,6 +795,8 @@ def _generate_source_feedback_report(args: argparse.Namespace, settings: object)
             sources_path=args.sources_path or settings.root_dir / "data" / "sources.yaml",
         )
         application = {"dry_run": True, "applied_count": 0}
+    db = Database(settings.database_url, mock=settings.mock)
+    db.sync_source_feedback_report(report)
     counts = _source_feedback_action_counts(report.get("source_suggestions", []))
     print(f"Source feedback report generated: json={report_path}")
     print(
@@ -788,6 +876,8 @@ def _update_publish_task(args: argparse.Namespace, settings: object) -> int:
     if not updates:
         raise SystemExit("No publish task updates provided")
     task = update_publish_task(settings.output_dir, str(args.update_publish_task), updates)
+    db = Database(settings.database_url, mock=settings.mock)
+    db.sync_publish_tasks([task])
     print(
         "Publish task updated: "
         f"task_id={task['task_id']} "

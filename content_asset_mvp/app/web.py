@@ -4,7 +4,6 @@ import html
 import importlib.util
 import re
 import shutil
-import subprocess
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +13,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 from .artifact_writer import ArtifactWriter
 from .config import load_settings
+from .db import Database
 from .downloader import check_download_dependencies, make_content_id
 from .feedback_analysis import analyze_feedback, generate_feedback_report, load_feedback_report
 from .github_auth import github_auth_status
@@ -51,6 +51,7 @@ DISPLAY_ARTIFACTS = [
     "auto_run_summary.json",
     "github_analysis.json",
     "github_meta.json",
+    "generic_candidate.json",
     "youtube_candidate.json",
     "youtube_transcript.json",
     "readme.md",
@@ -67,13 +68,30 @@ DISPLAY_ARTIFACTS = [
     "media_job.json",
     "voice.wav",
     "voice.mp3",
+    "voice_mastered.mp3",
+    "audio_mastering_status.json",
     "subtitles.srt",
     "subtitles.zh.srt",
     "subtitles.en.srt",
     "subtitles.bilingual.srt",
+    "subtitle_plan.json",
     "subtitle_translation_status.json",
     "tts_status.json",
+    "video_render_manifest.json",
+    "render_manifest.v6.json",
+    "remotion_status.json",
+    "visual_qc_report.json",
+    "director_plan.json",
+    "shot_list.json",
+    "edit_decisions.json",
+    "visual_asset_pack.json",
+    "video_quality_report.json",
+    "director_script.md",
+    "director_quality_checklist.json",
     "render_status.json",
+    "brand_template.json",
+    "cover.png",
+    "visual_asset_card.png",
     "final_video.mp4",
     "platform_publish_package.json",
     "platform_publish_package.md",
@@ -198,17 +216,17 @@ def _layout(title: str, body: str) -> str:
 </head>
 <body>
   <header>
-    <strong>Content Asset MVP</strong>
+    <strong>Overseas AI Narrative Asset MVP</strong> <span class="muted">Content Asset MVP</span>
     <nav style="margin-top: 8px;">
-      <a href="/">运行流水线</a>
+      <a href="/">机会发现流水线</a>
       <a href="/github">GitHub 项目解读</a>
-      <a href="/sources">源池/选题入口</a>
+      <a href="/sources">机会源池/选题入口</a>
       <a href="/source-manager">源池管理</a>
       <a href="/source-discovery">候选源审核</a>
-      <a href="/outputs">审核包列表</a>
+      <a href="/outputs">叙事资产审核包</a>
       <a href="/videos">成片库</a>
       <a href="/publish-board">发布看板</a>
-      <a href="/feedback-board">反馈看板</a>
+      <a href="/feedback-board">分发反馈看板</a>
       <a href="/platform-accounts">账号配置</a>
       <a href="/status">系统状态</a>
     </nav>
@@ -236,27 +254,6 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _git_status_short(root_dir: Path) -> str:
-    if shutil.which("git") is None:
-        return "git 不可用"
-    try:
-        result = subprocess.run(
-            ["git", "status", "--short"],
-            cwd=root_dir,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"检查失败：{exc}"
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout).strip()
-        return message.splitlines()[0] if message else "非 git 仓库"
-    status = result.stdout.strip()
-    return status if status else "clean"
-
-
 def list_output_packages(output_dir: Path) -> list[Path]:
     if not output_dir.exists():
         return []
@@ -271,9 +268,17 @@ def list_rendered_videos(output_dir: Path) -> list[dict[str, Any]]:
             continue
         meta = _read_json(package_dir / "meta.json")
         render_status = _read_json(package_dir / "render_status.json")
+        render_manifest = _read_json(package_dir / "video_render_manifest.json")
+        render_parameters = render_manifest.get("render_parameters", {}) if isinstance(render_manifest.get("render_parameters"), dict) else {}
+        brand_template = _read_json(package_dir / "brand_template.json")
         tts_status = _read_json(package_dir / "tts_status.json")
         translation_status = _read_json(package_dir / "subtitle_translation_status.json")
         publish_review = _read_json(package_dir / "publish_review.json")
+        video_quality_report = _read_json(package_dir / "video_quality_report.json")
+        visual_qc_report = _read_json(package_dir / "visual_qc_report.json")
+        remotion_status = _read_json(package_dir / "remotion_status.json")
+        video_version = str(render_manifest.get("video_version") or render_status.get("video_version") or video_path.stat().st_mtime_ns)
+        generated_at = str(render_manifest.get("generated_at") or render_status.get("generated_at") or "")
         videos.append(
             {
                 "content_id": package_dir.name,
@@ -281,15 +286,30 @@ def list_rendered_videos(output_dir: Path) -> list[dict[str, Any]]:
                 "source_type": meta.get("source_type", "-"),
                 "source_url": meta.get("source_url") or meta.get("webpage_url") or "",
                 "size_bytes": video_path.stat().st_size,
-                "tts_mode": tts_status.get("mode", "-"),
-                "subtitle_mode": render_status.get("subtitle_mode", "-"),
-                "translation_mode": translation_status.get("mode", "-"),
-                "duration_seconds": render_status.get("duration_seconds", "-"),
+                "video_version": video_version,
+                "generated_at": generated_at,
+                "resource_dir": render_manifest.get("resource_dir") or str(package_dir),
+                "tts_mode": render_parameters.get("tts_mode") or tts_status.get("mode", "-"),
+                "subtitle_mode": render_parameters.get("subtitle_mode") or render_status.get("subtitle_mode", "-"),
+                "template_id": render_status.get("template_id") or brand_template.get("template_id", "-"),
+                "brand_name": render_status.get("brand_name") or brand_template.get("brand_name", "-"),
+                "visual_quality": render_parameters.get("visual_quality") or render_status.get("visual_quality", "-"),
+                "translation_mode": render_parameters.get("translation_mode") or translation_status.get("mode", "-"),
+                "duration_seconds": render_parameters.get("duration_seconds") or render_status.get("duration_seconds", "-"),
+                "video_quality_score": render_parameters.get("video_quality_score") or video_quality_report.get("video_quality_score", "-"),
+                "publish_ready": render_parameters.get("publish_ready") if "publish_ready" in render_parameters else video_quality_report.get("publish_ready", False),
+                "architecture_version": render_parameters.get("architecture_version", "-"),
+                "render_engine_actual": render_parameters.get("render_engine_actual") or remotion_status.get("render_engine_actual", "-"),
+                "visual_qc_score": render_parameters.get("visual_qc_score") or visual_qc_report.get("score", "-"),
+                "visual_qc_pass": render_parameters.get("visual_qc_pass") if "visual_qc_pass" in render_parameters else visual_qc_report.get("pass", False),
+                "remotion_status": remotion_status.get("status", "-"),
+                "remotion_reason": remotion_status.get("reason", ""),
+                "blocking_reasons": video_quality_report.get("blocking_reasons", []),
                 "publish_status": publish_review.get("status", "pending"),
                 "platform_package_exists": (package_dir / "platform_publish_package.json").exists(),
             }
         )
-    return videos
+    return sorted(videos, key=lambda item: (str(item.get("generated_at") or ""), str(item.get("video_version") or "")), reverse=True)
 
 
 def safe_artifact_path(output_dir: Path, content_id: str, filename: str) -> Path:
@@ -460,8 +480,9 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _home(self) -> str:
         body = """<div class="card">
-  <h1>运行内容资产流水线</h1>
-  <p class="muted">输入一个海外内容 URL，先用 mock 模式跑通审核包；关闭 mock 后会走真实下载、转写和模型接口。</p>
+  <h1>海外 AI 机会发现与中文叙事资产流水线</h1>
+  <p class="muted">输入一个海外内容 URL，先用 mock 模式跑通审核包；系统定位是海外 AI 商业机会、AI 工具/CLI/开源项目解读与中文叙事视频资产。</p>
+  <p class="muted">重点是解读、叙事、观察和拆解；避免收益承诺，保留事实核查和来源边界风控，不做照搬式教程。</p>
   <p class="muted">真实模式需要完成 .env、PostgreSQL、yt-dlp、ffmpeg 和 API key 配置；可以先打开“系统状态”检查本机依赖。</p>
   <form method="post" action="/auto-close-loop">
     <input type="hidden" name="mock_discovery" value="1">
@@ -482,20 +503,20 @@ class WebHandler(BaseHTTPRequestHandler):
       <option value="quality">跑到质检</option>
     </select>
     <label><input type="checkbox" name="mock" checked> 使用 mock 模式</label>
-    <button type="submit">开始生成审核包</button>
+    <button type="submit">生成中文叙事审核包</button>
   </form>
 </div>"""
         return _layout("运行流水线", body)
 
     def _github(self) -> str:
         body = """<div class="card">
-  <h1>GitHub AI 项目解读</h1>
-  <p class="muted">输入公开 GitHub 仓库 URL，系统会抓取 metadata、README、README 图片素材，并生成中文项目解读审核包。截图能力为可选项，没有 Playwright 时会自动跳过。</p>
+  <h1>GitHub / CLI / 开源 AI 项目解读</h1>
+  <p class="muted">输入公开 GitHub 仓库 URL，系统会抓取 metadata、README、README 图片素材，并生成“为什么火、解决什么问题、中文开发者如何理解”的项目解读审核包。截图能力为可选项，没有 Playwright 时会自动跳过。</p>
   <form method="post" action="/run">
     <label>GitHub repo URL</label>
     <input type="text" name="github_url" placeholder="https://github.com/owner/repo" required>
     <label><input type="checkbox" name="mock" checked> 使用 mock 模式</label>
-    <button type="submit">生成 GitHub 解读审核包</button>
+    <button type="submit">生成开源项目解读审核包</button>
   </form>
 </div>"""
         return _layout("GitHub 项目解读", body)
@@ -519,7 +540,6 @@ class WebHandler(BaseHTTPRequestHandler):
             ("Qwen API key", "已配置" if settings.qwen_api_key else "未配置"),
             ("Ark API key", "已配置" if settings.ark_api_key else "未配置"),
             ("Ark model", settings.ark_model or "未配置"),
-            ("git status --short", _git_status_short(settings.root_dir)),
             ("输出目录", str(settings.output_dir)),
             ("最近审核包数量", str(len(list_output_packages(settings.output_dir)))),
         ]
@@ -609,9 +629,9 @@ class WebHandler(BaseHTTPRequestHandler):
             )
 
         body = f"""<div class="card">
-  <h1>源池/选题入口</h1>
-  <p class="muted">不要从 YouTube 首页找。直接从这些英文白名单源和英文搜索词进入，可以绕开中文推荐流。</p>
-  <p class="muted">使用建议：先点英文搜索词，按上传日期筛最近内容；看到合适视频后复制 URL 回到“运行流水线”。</p>
+  <h1>机会源池/选题入口</h1>
+  <p class="muted">不要从 YouTube 首页找。直接从这些英文白名单源、GitHub/CLI 项目源和英文搜索词进入，发现海外 AI 工具、开源项目、产品发布与商业机会信号。</p>
+  <p class="muted">使用建议：先看为什么火、资料是否完整、中文信息差是否存在；看到合适素材后复制 URL 回到“机会发现流水线”。</p>
   <p><a class="button" href="/source-manager">打开源池管理视图</a></p>
 </div>
 <div class="card">
@@ -630,7 +650,7 @@ class WebHandler(BaseHTTPRequestHandler):
   <h2>白名单源</h2>
   <div class="grid">{''.join(source_items)}</div>
 </div>"""
-        return _layout("源池/选题入口", body)
+        return _layout("机会源池/选题入口", body)
 
     def _source_manager(self) -> str:
         sources = load_sources(self.server.root_dir / "data" / "sources.yaml")
@@ -677,7 +697,7 @@ class WebHandler(BaseHTTPRequestHandler):
             )
         body = f"""<div class="card">
   <h1>源池管理</h1>
-  <p class="muted">只读管理视图，用来集中查看人物源、项目源、社区源和关键词发现入口。编辑源池请修改 data/sources.yaml。</p>
+  <p class="muted">只读管理视图，用来集中查看海外 AI 机会人物源、项目源、社区源和关键词发现入口。编辑源池请修改 data/sources.yaml。</p>
   <div class="grid">{stat_html}</div>
   <p>{type_html}</p>
 </div>
@@ -685,8 +705,10 @@ class WebHandler(BaseHTTPRequestHandler):
         return _layout("源池管理", body)
 
     def _source_discovery(self) -> str:
-        pool = load_candidate_pool(self.server.root_dir / "data" / "candidate_sources.json")
-        candidates = [item for item in pool.get("candidates", []) if isinstance(item, dict)]
+        candidates = _safe_db_read(self.server.db.list_source_candidates, [])
+        if not candidates:
+            pool = load_candidate_pool(self.server.root_dir / "data" / "candidate_sources.json")
+            candidates = [item for item in pool.get("candidates", []) if isinstance(item, dict)]
         stats = candidate_stats(candidates)
         stat_cards = [
             ("候选源总数", stats["total_candidates"]),
@@ -748,7 +770,7 @@ class WebHandler(BaseHTTPRequestHandler):
         empty_html = "<div class='card'><p class='muted'>候选池为空。可以先运行 mock discovery。</p></div>" if not candidates else ""
         body = f"""<div class="card">
   <h1>候选源审核</h1>
-  <p class="muted">自动发现结果只进入 candidate_sources.json 候选池，不会直接写入正式 sources.yaml。这里用于人工查看、筛选和后续确认。</p>
+  <p class="muted">自动发现结果只进入 candidate_sources.json 候选池，不会直接写入正式 sources.yaml。这里用于人工查看“为什么火、资料是否完整、中文叙事价值和来源边界”。</p>
   <form method="post" action="/discover-sources">
     <button type="submit">运行真实 discovery</button>
   </form>
@@ -773,8 +795,8 @@ class WebHandler(BaseHTTPRequestHandler):
     def _outputs(self) -> str:
         packages = list_output_packages(self.server.output_dir)
         if not packages:
-            body = "<div class='card'><h1>审核包列表</h1><p class='muted'>还没有生成审核包。</p></div>"
-            return _layout("审核包列表", body)
+            body = "<div class='card'><h1>叙事资产审核包</h1><p class='muted'>还没有生成中文叙事审核包。</p></div>"
+            return _layout("叙事资产审核包", body)
         items = []
         for package_dir in packages:
             meta = _read_json(package_dir / "meta.json")
@@ -785,8 +807,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 f"<div class='muted'>{_escape(package_dir.name)}</div>"
                 "</div>"
             )
-        body = f"<div class='card'><h1>审核包列表</h1><div class='grid'>{''.join(items)}</div></div>"
-        return _layout("审核包列表", body)
+        body = f"<div class='card'><h1>叙事资产审核包</h1><div class='grid'>{''.join(items)}</div></div>"
+        return _layout("叙事资产审核包", body)
 
     def _videos(self) -> str:
         videos = list_rendered_videos(self.server.output_dir)
@@ -807,6 +829,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 duration = f"{duration:.1f}s"
             size_mb = float(video.get("size_bytes", 0)) / 1024 / 1024
             package_dir = self.server.output_dir / content_id
+            video_version = _escape(str(video.get("video_version") or ""))
+            video_url = f"/artifact/{_escape(content_id)}/final_video.mp4?v={video_version}"
+            generated_at = _escape(str(video.get("generated_at") or "-"))
+            resource_dir = _escape(str(video.get("resource_dir") or package_dir))
+            blocking_reasons = video.get("blocking_reasons", [])
+            blocking_text = "；".join(str(reason) for reason in blocking_reasons) if isinstance(blocking_reasons, list) else str(blocking_reasons or "")
+            publish_ready = bool(video.get("publish_ready"))
+            remotion_reason = str(video.get("remotion_reason") or "")
             platform_package = _read_json(package_dir / "platform_publish_package.json")
             platform_ready = bool(platform_package)
             platform_assets_html = ""
@@ -819,22 +849,35 @@ class WebHandler(BaseHTTPRequestHandler):
             items.append(
                 "<div class='card video-card'>"
                 "<div class='video-preview'>"
-                f"<video class='video-player' controls preload='metadata' src='/artifact/{_escape(content_id)}/final_video.mp4'></video>"
+                f"<video class='video-player' controls preload='metadata' src='{video_url}'></video>"
                 "</div>"
                 "<div class='video-main'>"
                 f"<h2>{_escape(video.get('title', content_id))}</h2>"
                 f"<div class='muted'>{_escape(content_id)} · {_escape(video.get('source_type', '-'))} · {size_mb:.1f} MB · {duration}</div>"
+                f"<div class='muted'>生成时间：{generated_at} · video_version={video_version}</div>"
+                f"<div class='muted'>资源目录：<code>{resource_dir}</code></div>"
                 "<p>"
                 f"<span class='pill'>TTS: {_escape(video.get('tts_mode', '-'))}</span>"
                 f"<span class='pill'>字幕: {_escape(video.get('subtitle_mode', '-'))}</span>"
+                f"<span class='pill'>模板: {_escape(video.get('template_id', '-'))}</span>"
+                f"<span class='pill'>视觉: {_escape(video.get('visual_quality', '-'))}</span>"
+                f"<span class='pill'>质量分: {_escape(video.get('video_quality_score', '-'))}</span>"
+                f"<span class='pill'>v6: {_escape(video.get('architecture_version', '-'))}</span>"
+                f"<span class='pill'>引擎: {_escape(video.get('render_engine_actual', '-'))}</span>"
+                f"<span class='pill'>Visual QC: {_escape(video.get('visual_qc_score', '-'))} / {_escape(video.get('visual_qc_pass', False))}</span>"
+                f"<span class='pill'>Remotion: {_escape(video.get('remotion_status', '-'))}</span>"
+                f"<span class='pill'>publish_ready: {_escape(publish_ready)}</span>"
                 f"<span class='pill'>翻译: {_escape(video.get('translation_mode', '-'))}</span>"
                 f"<span class='pill'>审核: {_escape(video.get('publish_status', 'pending'))}</span>"
                 f"<span class='pill'>平台发布包: {_escape('已生成' if platform_ready else '未生成')}</span>"
                 "</p>"
+                f"<p class='warning'>{_escape('阻断原因：' + blocking_text) if blocking_text else ''}</p>"
+                f"<p class='muted'>{_escape('Remotion fallback：' + remotion_reason) if remotion_reason else ''}</p>"
                 "<div class='video-actions'>"
                 f"{source_link}"
                 f"<a href='/outputs/{_escape(content_id)}'>查看审核包</a>"
-                f"<a href='/artifact/{_escape(content_id)}/final_video.mp4'>打开视频文件</a>"
+                f"<a href='{video_url}'>打开视频文件</a>"
+                f"<a href='/artifact/{_escape(content_id)}/video_render_manifest.json'>生成参数</a>"
                 "<a href='/publish-board'>发布看板</a>"
                 f"{_platform_package_form(content_id, '/videos', '刷新发布包' if platform_ready else '生成发布包')}"
                 "</div>"
@@ -844,7 +887,7 @@ class WebHandler(BaseHTTPRequestHandler):
             )
         body = f"""<div class="card">
   <h1>成片库</h1>
-  <p class="muted">这里按审核包归档所有成片。左侧预览视频，右侧查看状态和发布资产；五平台长文案默认折叠，展开后可直接复制粘贴。</p>
+  <p class="muted">这里按审核包归档中文叙事视频资产。左侧预览视频，右侧查看状态和分发文案；五平台长文案默认折叠，展开后可复制用于人工发布。</p>
 </div>
 <div class="video-list">{''.join(items)}</div>"""
         return _layout("成片库", body)
@@ -913,7 +956,9 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _publish_board(self, query: dict[str, list[str]] | None = None) -> str:
         query = query or {}
-        tasks = load_all_publish_tasks(self.server.output_dir)
+        tasks = _safe_db_read(self.server.db.list_publish_tasks, [], self.server.output_dir)
+        if not tasks:
+            tasks = load_all_publish_tasks(self.server.output_dir)
         latest_attempts = latest_attempts_by_task(self.server.output_dir)
         selected_status = _form_value(query, "status", "")
         selected_platform = _form_value(query, "platform", "")
@@ -957,8 +1002,8 @@ class WebHandler(BaseHTTPRequestHandler):
         )
         empty_html = "<p class='muted'>还没有 publish_tasks.json。请先刷新全部发布任务，系统会基于已有 platform_publish_package.json 补齐每个平台的发布任务。</p>"
         body = f"""<div class="card">
-  <h1>发布审核与排期中心</h1>
-  <p class="muted">每个成片的每个平台是一条独立任务；这里只做人工审核、排期、发布记录和指标录入，不会自动发布。</p>
+  <h1>分发审核与排期中心</h1>
+  <p class="muted">每个中文叙事视频资产的每个平台是一条独立任务；这里只做人工审核、排期、发布记录和指标录入，不会自动发布。</p>
   <form method="post" action="/publish-board/refresh">
     <button type="submit">刷新全部发布任务</button>
   </form>
@@ -992,9 +1037,9 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _feedback_board(self) -> str:
         report_path = self.server.data_dir / "feedback_report.json"
-        report = load_feedback_report(report_path)
+        report = _safe_db_read(self.server.db.latest_feedback_report, {}, "publish_feedback") or load_feedback_report(report_path)
         source_feedback_path = self.server.data_dir / "source_feedback_report.json"
-        source_feedback = load_source_feedback_report(source_feedback_path)
+        source_feedback = _safe_db_read(self.server.db.latest_feedback_report, {}, "source_feedback") or load_source_feedback_report(source_feedback_path)
         if not report:
             report = analyze_feedback(load_all_publish_tasks(self.server.output_dir))
             report["report_path"] = str(report_path)
@@ -1018,8 +1063,8 @@ class WebHandler(BaseHTTPRequestHandler):
   <p><a class="button" href="/publish-board">去发布看板录入数据</a></p>
 </div>"""
         body = f"""<div class="card">
-  <h1>平台表现评分与反馈看板</h1>
-  <p class="muted">基于 publish_tasks.json 中的发布指标计算平台表现分，并给出内容复盘、平台策略和源池权重建议。报告文件：<code>{_escape(report.get("report_path", report_path))}</code></p>
+  <h1>分发反馈与源池复盘看板</h1>
+  <p class="muted">基于 publish_tasks.json 中的发布指标计算分发反馈，并给出中文叙事资产复盘、平台策略和海外机会源池权重建议。报告文件：<code>{_escape(report.get("report_path", report_path))}</code></p>
   <form method="post" action="/feedback-board/refresh">
     <button type="submit">刷新反馈报告</button>
   </form>
@@ -1035,7 +1080,7 @@ class WebHandler(BaseHTTPRequestHandler):
   {_feedback_platforms_html(report.get("best_platforms", []))}
 </div>
 <div class="card">
-  <h2>最佳视频</h2>
+  <h2>最佳叙事资产</h2>
   {_feedback_tasks_html(report.get("best_tasks", []))}
 </div>
 <div class="card">
@@ -1043,11 +1088,11 @@ class WebHandler(BaseHTTPRequestHandler):
   {_feedback_time_windows_html(report.get("time_window_summary", []))}
 </div>
 <div class="card">
-  <h2>弱表现任务</h2>
+  <h2>弱表现分发任务</h2>
   {_feedback_tasks_html(report.get("weak_tasks", []))}
 </div>
 <div class="card">
-  <h2>内容洞察</h2>
+  <h2>叙事资产洞察</h2>
   {_feedback_list_html(report.get("content_insights", []))}
 </div>
 <div class="card">
@@ -1089,12 +1134,87 @@ class WebHandler(BaseHTTPRequestHandler):
         images_html = f"<div class='card'><h2>README 图片素材</h2><ul>{''.join(image_items)}</ul></div>" if image_items else ""
         publish_review_html = _publish_review_html(package_dir, content_id)
         platform_publish_html = _platform_publish_html(package_dir, content_id)
+        render_manifest = _read_json(package_dir / "video_render_manifest.json")
+        render_parameters = render_manifest.get("render_parameters", {}) if isinstance(render_manifest.get("render_parameters"), dict) else {}
+        video_quality_report = _read_json(package_dir / "video_quality_report.json")
+        visual_qc_report = _read_json(package_dir / "visual_qc_report.json")
+        remotion_status = _read_json(package_dir / "remotion_status.json")
+        quality_html = ""
+        if video_quality_report:
+            blocking_reasons = video_quality_report.get("blocking_reasons", [])
+            blocking_html = "".join(f"<li>{_escape(reason)}</li>" for reason in blocking_reasons) if isinstance(blocking_reasons, list) else ""
+            quality_cards = [
+                ("video_quality_score", video_quality_report.get("video_quality_score", "-")),
+                ("visual_density_score", video_quality_report.get("visual_density_score", "-")),
+                ("asset_diversity_score", video_quality_report.get("asset_diversity_score", "-")),
+                ("subtitle_quality_score", video_quality_report.get("subtitle_quality_score", "-")),
+                ("voice_quality_score", video_quality_report.get("voice_quality_score", "-")),
+                ("hook_strength_score", video_quality_report.get("hook_strength_score", "-")),
+                ("publish_ready", video_quality_report.get("publish_ready", False)),
+            ]
+            cards = "".join(f"<div class='item'><div class='muted'>{_escape(k)}</div><strong>{_escape(v)}</strong></div>" for k, v in quality_cards)
+            quality_html = f"""<div class="card">
+  <h2>视频质量报告</h2>
+  <div class="grid">{cards}</div>
+  <h3>阻断原因</h3>
+  <ul>{blocking_html or '<li>无</li>'}</ul>
+  <p><a href="/artifact/{_escape(content_id)}/video_quality_report.json">打开 video_quality_report.json</a></p>
+</div>"""
+        manifest_html = ""
+        if render_manifest:
+            parameter_cards = [
+                ("generated_at", render_manifest.get("generated_at", "-")),
+                ("video_version", render_manifest.get("video_version", "-")),
+                ("resource_dir", render_manifest.get("resource_dir", package_dir)),
+                ("subtitle_mode", render_parameters.get("subtitle_mode", "-")),
+                ("visual_quality", render_parameters.get("visual_quality", "-")),
+                ("template_id", render_parameters.get("template_id", "-")),
+                ("director_style", render_parameters.get("director_style", "-")),
+                ("edit_template", render_parameters.get("edit_template", "-")),
+                ("shot_count", render_parameters.get("shot_count", "-")),
+                ("video_quality_score", render_parameters.get("video_quality_score", "-")),
+                ("publish_ready", render_parameters.get("publish_ready", "-")),
+                ("architecture_version", render_parameters.get("architecture_version", "-")),
+                ("render_engine_preferred", render_parameters.get("render_engine_preferred", "-")),
+                ("render_engine_actual", render_parameters.get("render_engine_actual", "-")),
+                ("audio_mastered", render_parameters.get("audio_mastered", "-")),
+                ("visual_qc_score", render_parameters.get("visual_qc_score", "-")),
+                ("visual_qc_pass", render_parameters.get("visual_qc_pass", "-")),
+            ]
+            cards = "".join(f"<div class='item'><div class='muted'>{_escape(k)}</div><strong>{_escape(v)}</strong></div>" for k, v in parameter_cards)
+            manifest_html = f"""<div class="card">
+  <h2>视频生成参数</h2>
+  <p class="muted">每次生成 final_video.mp4 都会刷新 video_render_manifest.json，代码和页面都从这里读取生成时间、版本参数和资源目录。</p>
+  <div class="grid">{cards}</div>
+  <p><a href="/artifact/{_escape(content_id)}/video_render_manifest.json">打开 video_render_manifest.json</a></p>
+</div>"""
+        v6_html = ""
+        if visual_qc_report or remotion_status:
+            v6_cards = [
+                ("architecture_version", render_parameters.get("architecture_version", visual_qc_report.get("architecture_version", "-"))),
+                ("visual_qc_score", visual_qc_report.get("score", "-")),
+                ("visual_qc_pass", visual_qc_report.get("pass", "-")),
+                ("remotion_status", remotion_status.get("status", "-")),
+                ("render_engine_actual", remotion_status.get("render_engine_actual", render_parameters.get("render_engine_actual", "-"))),
+                ("fallback_engine", remotion_status.get("fallback_engine", "-")),
+            ]
+            cards = "".join(f"<div class='item'><div class='muted'>{_escape(k)}</div><strong>{_escape(v)}</strong></div>" for k, v in v6_cards)
+            remotion_reason = remotion_status.get("reason", "")
+            v6_html = f"""<div class="card">
+  <h2>v6 工业化切片</h2>
+  <p class="muted">当前切片已生成 renderer-neutral 字幕计划、音频 mastering 状态、Remotion 探测状态、v6 render manifest 和 visual QC 报告；实际视频仍可回退到 ffmpeg。</p>
+  <div class="grid">{cards}</div>
+  <p class="muted">{_escape(remotion_reason)}</p>
+  <p><a href="/artifact/{_escape(content_id)}/render_manifest.v6.json">打开 render_manifest.v6.json</a> · <a href="/artifact/{_escape(content_id)}/visual_qc_report.json">打开 visual_qc_report.json</a> · <a href="/artifact/{_escape(content_id)}/remotion_status.json">打开 remotion_status.json</a></p>
+</div>"""
         video_html = ""
         if (package_dir / "final_video.mp4").exists():
+            video_version = str(render_manifest.get("video_version") or (package_dir / "final_video.mp4").stat().st_mtime_ns)
+            video_url = f"/artifact/{_escape(content_id)}/final_video.mp4?v={_escape(video_version)}"
             video_html = f"""<div class="card video-card">
   <h2>成片预览</h2>
-  <video class="video-player" controls preload="metadata" src="/artifact/{_escape(content_id)}/final_video.mp4"></video>
-  <p><a href="/artifact/{_escape(content_id)}/final_video.mp4">打开视频文件</a> · <a href="/videos">返回成片库</a></p>
+  <video class="video-player" controls preload="metadata" src="{video_url}"></video>
+  <p><a href="{video_url}">打开视频文件</a> · <a href="/videos">返回成片库</a></p>
 </div>"""
         body = f"""<div class="card">
   <h1>{_escape(content_id)}</h1>
@@ -1106,6 +1226,9 @@ class WebHandler(BaseHTTPRequestHandler):
 </div>
 {images_html}
 {video_html}
+{manifest_html}
+{v6_html}
+{quality_html}
 {publish_review_html}
 {platform_publish_html}
 <div class="card">
@@ -1220,20 +1343,23 @@ class WebHandler(BaseHTTPRequestHandler):
         self._redirect(return_to if return_to in {"/videos", f"/outputs/{content_id}"} else f"/outputs/{content_id}")
 
     def _publish_board_refresh(self) -> None:
-        generate_publish_tasks_all(self.server.output_dir)
+        tasks = generate_publish_tasks_all(self.server.output_dir)
+        _safe_db_sync(self.server.db.sync_publish_tasks, tasks)
         self._redirect("/publish-board")
 
     def _feedback_board_refresh(self) -> None:
-        generate_feedback_report(self.server.output_dir, self.server.data_dir / "feedback_report.json")
+        report = generate_feedback_report(self.server.output_dir, self.server.data_dir / "feedback_report.json")
+        _safe_db_sync(self.server.db.sync_feedback_report, report)
         self._redirect("/feedback-board")
 
     def _source_feedback_refresh(self) -> None:
-        generate_source_feedback_report(
+        report = generate_source_feedback_report(
             self.server.output_dir,
             self.server.data_dir / "source_feedback_report.json",
             feedback_report_path=self.server.data_dir / "feedback_report.json",
             sources_path=self.server.data_dir / "sources.yaml",
         )
+        _safe_db_sync(self.server.db.sync_source_feedback_report, report)
         self._redirect("/feedback-board")
 
     def _publish_task(self, form: dict[str, list[str]]) -> None:
@@ -1266,6 +1392,8 @@ class WebHandler(BaseHTTPRequestHandler):
         elif any(key in form for key in METRIC_KEYS):
             updates["metrics"] = metrics
         update_publish_task(self.server.output_dir, task_id, updates)
+        updated_tasks = [task for task in load_all_publish_tasks(self.server.output_dir) if task.get("task_id") == task_id]
+        _safe_db_sync(self.server.db.sync_publish_tasks, updated_tasks)
         self._redirect("/publish-board")
 
     def _publish_dry_run(self, form: dict[str, list[str]]) -> None:
@@ -1298,6 +1426,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _discover_sources(self, form: dict[str, list[str]]) -> None:
         discover_sources(mock="mock" in form)
+        _safe_db_sync(self.server.db.sync_source_candidates, load_candidate_pool(self.server.root_dir / "data" / "candidate_sources.json").get("candidates", []))
         self._redirect("/source-discovery")
 
     def _auto_close_loop(self, form: dict[str, list[str]]) -> None:
@@ -1320,14 +1449,17 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _candidate_approve(self, form: dict[str, list[str]]) -> None:
         approve_candidate(_form_value(form, "candidate_id"))
+        _safe_db_sync(self.server.db.sync_source_candidates, load_candidate_pool(self.server.root_dir / "data" / "candidate_sources.json").get("candidates", []))
         self._redirect("/source-discovery")
 
     def _candidate_reject(self, form: dict[str, list[str]]) -> None:
         reject_candidate(_form_value(form, "candidate_id"), _form_value(form, "review_reason", ""))
+        _safe_db_sync(self.server.db.sync_source_candidates, load_candidate_pool(self.server.root_dir / "data" / "candidate_sources.json").get("candidates", []))
         self._redirect("/source-discovery")
 
     def _candidate_archive(self, form: dict[str, list[str]]) -> None:
         archive_candidate(_form_value(form, "candidate_id"), _form_value(form, "review_reason", ""))
+        _safe_db_sync(self.server.db.sync_source_candidates, load_candidate_pool(self.server.root_dir / "data" / "candidate_sources.json").get("candidates", []))
         self._redirect("/source-discovery")
 
     def _candidate_package(self, form: dict[str, list[str]]) -> None:
@@ -1366,6 +1498,8 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Content-Disposition", f'inline; filename="{path.name}"')
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(payload)
 
@@ -1385,6 +1519,7 @@ class ContentAssetWebServer(ThreadingHTTPServer):
         self.data_dir = settings.root_dir / "data"
         self.output_dir = settings.output_dir
         self.workspace_dir = settings.workspace_dir
+        self.db = Database(settings.database_url, mock=False)
         super().__init__(server_address, handler_class)
 
 
@@ -1395,6 +1530,22 @@ def _form_value(form: dict[str, list[str]], key: str, default: str | None = None
             return default
         raise ValueError(f"Missing form field: {key}")
     return values[0].strip()
+
+
+def _safe_db_sync(method: Any, *args: Any, **kwargs: Any) -> None:
+    try:
+        method(*args, **kwargs)
+    except Exception as exc:  # Web operations should keep JSON as the fallback source of truth.
+        sys.stderr.write(f"web db sync skipped: {exc}\n")
+
+
+def _safe_db_read(method: Any, default: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        result = method(*args, **kwargs)
+    except Exception as exc:
+        sys.stderr.write(f"web db read fallback: {exc}\n")
+        return default
+    return result if result else default
 
 
 def _form_int(form: dict[str, list[str]], key: str) -> int:
@@ -1750,7 +1901,7 @@ def _publish_review_html(package_dir: Path, content_id: str) -> str:
     )
     return f"""<div class="card">
   <h2>发布前审核</h2>
-  <p class="muted">这里只记录人工发布决策，不会真的发布到任何平台。metadata-only 或字幕异常内容不能视为可直接发布。</p>
+  <p class="muted">这里只记录人工分发决策，不会真的发布到任何平台。metadata-only 或字幕异常内容不能视为可直接发布；重点核查收益承诺、事实依据和来源边界。</p>
   {warning_html}
   <div class="grid">{cards}</div>
   <h3>待核查项</h3>
@@ -1774,13 +1925,13 @@ def _platform_publish_html(package_dir: Path, content_id: str) -> str:
     if not package:
         return f"""<div class="card">
   <h2>多平台发布包</h2>
-  <p class="muted">生成抖音、快手、微信视频号、B站可复制粘贴的发布文案草稿；这里只生成发布资产，不会自动发布。</p>
+  <p class="muted">生成抖音、快手、微信视频号、B站可复制粘贴的分发文案草稿；标题和描述围绕为什么火、海外 AI 工具观察、开发者关注点和 AI 商业机会拆解。这里只生成分发资产，不会自动发布。</p>
   {_platform_package_form(content_id, f"/outputs/{content_id}", "生成发布包")}
 </div>"""
     generated_at = package.get("generated_at", "-")
     return f"""<div class="card">
   <h2>多平台发布包</h2>
-  <p class="muted">已生成 platform_publish_package.json / platform_publish_package.md，生成时间：{_escape(generated_at)}。这里只生成发布资产，不会自动发布。</p>
+  <p class="muted">已生成 platform_publish_package.json / platform_publish_package.md，生成时间：{_escape(generated_at)}。这里只生成分发资产，不会自动发布。</p>
   {_platform_package_form(content_id, f"/outputs/{content_id}", "刷新发布包")}
   {_platform_assets_grid(package)}
 </div>"""

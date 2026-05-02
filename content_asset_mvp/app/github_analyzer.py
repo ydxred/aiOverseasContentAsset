@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .artifact_writer import ArtifactWriter
+from .content_positioning import ContentType, normalize_analysis_positioning
 from .db import Database
 from .llm_client import LLMClient
 from .rewriter import _normalize_script, _normalize_titles
@@ -27,6 +28,11 @@ def analyze_github_project(
     analysis = response.content
     if not isinstance(analysis, dict):
         raise RuntimeError("github_analysis response must be JSON-compatible")
+    analysis = normalize_analysis_positioning(
+        analysis,
+        source_type="github_repo",
+        default_content_type=ContentType.GITHUB_OPEN_SOURCE_PROJECT.value,
+    )
 
     analysis_path = writer.write_json("github_analysis.json", analysis)
     db.record_model_run(writer.output_dir.name, "github_analysis", response.provider, response.model, "succeeded")

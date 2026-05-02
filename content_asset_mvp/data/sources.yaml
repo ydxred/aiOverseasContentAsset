@@ -34,7 +34,7 @@ sources:
       - Greg Isenberg
       - community business
       - AI startup ideas
-    note: Strong source for community-led products, AI-native startup ideas, and idea teardown content.
+    note: Strong source for community-led products, AI-native startup ideas, and opportunity teardown content; use as observation, not a playbook.
     priority: 9
     discovery_method: Watch YouTube interviews and X threads for repeatable startup patterns.
   - source_id: rob_walling
@@ -100,7 +100,7 @@ sources:
       - micro SaaS
       - bootstrapped SaaS
       - indie founder growth
-    note: Bootstrapped SaaS, indie founder growth, pricing.
+    note: Bootstrapped SaaS, indie founder growth, pricing; useful for overseas AI startup case explainers.
     priority: 8
     discovery_method: Track founder talks and case studies.
   - source_id: my_first_million_youtube
@@ -115,7 +115,7 @@ sources:
       - business ideas
       - market gaps
       - founder discussion
-    note: Business ideas, market gaps, founder discussion.
+    note: Business ideas, market gaps, founder discussion for AI opportunity observation.
     priority: 7
     discovery_method: Scan recent idea episodes and guest names.
   - source_id: starter_story_youtube
@@ -131,7 +131,7 @@ sources:
       - founder case study
       - online business
       - niche business
-    note: Founder case studies and niche business stories.
+    note: Founder case studies and niche business stories; keep source boundaries and avoid copying paths.
     priority: 6
     discovery_method: Mine profitable niche business stories.
   - source_id: tk_kader_youtube
@@ -191,7 +191,7 @@ sources:
       - AI agents
       - automation workflow
       - local LLM
-    note: AI agent workflows, automation, practical demos.
+    note: AI agent workflows, automation, practical demos for tool/CLI explainers.
     priority: 6
     discovery_method: Track practical AI workflow demos.
   - source_id: matt_wolfe_youtube
@@ -283,7 +283,7 @@ sources:
       - AI tools
       - no-code
       - productivity
-    note: New products, launch trends, tool discovery.
+    note: New products, launch trends, Product Hunt AI tool discovery.
     priority: 8
     discovery_method: Scan daily launches and comments for early adoption signals.
   - source_id: latent_space_podcast
@@ -314,7 +314,7 @@ sources:
       - indie founder
       - revenue
       - bootstrapped
-    note: Indie business stories and founder discussions.
+    note: Indie business stories and founder discussions; use revenue mentions only as context requiring verification.
     priority: 8
     discovery_method: Mine revenue stories and forum discussions.
   - source_id: hacker_news
@@ -402,13 +402,13 @@ search_queries:
     reason: 适合做海外小产品案例拆解。
   - query: n8n AI automation business
     category: automation_business
-    reason: 适合转成中文实操工作流内容。
+    reason: 适合转成中文 AI 工具观察和工作流拆解内容。
   - query: Make.com AI agent workflow
     category: automation_business
     reason: 自动化工具和 AI agent 结合，中文内容缺系统拆解。
   - query: solo founder AI startup ideas
     category: startup_ideas
-    reason: 适合选题库和商业模式拆解。
+    reason: 适合选题库和 AI 商业机会拆解。
   - query: bootstrapped SaaS growth case study
     category: saas_growth
     reason: 适合做 B2B SaaS 增长案例。
@@ -423,5 +423,5 @@ search_queries:
     reason: 适合做故事型短视频和图文。
   - query: small business AI automation case study
     category: small_business_ai
-    reason: 有商业价值，适合中文用户理解。
+    reason: 有商业启发，适合中文用户理解但不做结果承诺。
 

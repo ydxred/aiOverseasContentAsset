@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,6 +227,271 @@ class Database:
                 ),
             )
 
+    def sync_source_candidates(self, candidates: list[dict[str, Any]]) -> None:
+        if not self.enabled:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            for candidate in candidates:
+                candidate_id = str(candidate.get("candidate_id") or "").strip()
+                name = str(candidate.get("name") or "").strip()
+                url = str(candidate.get("url") or "").strip()
+                source_type = str(candidate.get("source_type") or "").strip()
+                if not candidate_id or not name or not url or not source_type:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO source_candidates (
+                      candidate_id, source_id, source_type, name, url, category, status,
+                      decision, score, reason, signals, discovered_from, raw_payload,
+                      review_package_content_id, review_package_generated_at, created_at, updated_at
+                    )
+                    VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (candidate_id) DO UPDATE SET
+                      source_id = EXCLUDED.source_id,
+                      source_type = EXCLUDED.source_type,
+                      name = EXCLUDED.name,
+                      url = EXCLUDED.url,
+                      category = EXCLUDED.category,
+                      status = EXCLUDED.status,
+                      decision = EXCLUDED.decision,
+                      score = EXCLUDED.score,
+                      reason = EXCLUDED.reason,
+                      signals = EXCLUDED.signals,
+                      discovered_from = EXCLUDED.discovered_from,
+                      raw_payload = EXCLUDED.raw_payload,
+                      review_package_content_id = EXCLUDED.review_package_content_id,
+                      review_package_generated_at = EXCLUDED.review_package_generated_at,
+                      updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        candidate_id,
+                        candidate.get("source_id"),
+                        source_type,
+                        name,
+                        url,
+                        candidate.get("category"),
+                        candidate.get("status", "new"),
+                        candidate.get("decision"),
+                        _int_or_none(candidate.get("score")),
+                        candidate.get("reason"),
+                        _json(candidate.get("signals", {})),
+                        _json(candidate.get("discovered_from", {})),
+                        _json(candidate),
+                        candidate.get("review_package_content_id"),
+                        candidate.get("review_package_generated_at"),
+                        candidate.get("created_at") or now,
+                        now,
+                    ),
+                )
+
+    def sync_publish_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        if not self.enabled:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            for task in tasks:
+                task_id = str(task.get("task_id") or "").strip()
+                content_id = str(task.get("content_id") or "").strip()
+                platform = str(task.get("platform") or "").strip()
+                if not task_id or not content_id or not platform:
+                    continue
+                updated_at = str(task.get("updated_at") or now)
+                conn.execute(
+                    """
+                    INSERT INTO publish_tasks (
+                      task_id, content_id, platform, platform_name, status, priority,
+                      scheduled_at, account, publish_url, published_at, title, suitable,
+                      metrics, metrics_latest, manual_review_risks, raw_payload, note,
+                      created_at, updated_at
+                    )
+                    VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s
+                    )
+                    ON CONFLICT (task_id) DO UPDATE SET
+                      content_id = EXCLUDED.content_id,
+                      platform = EXCLUDED.platform,
+                      platform_name = EXCLUDED.platform_name,
+                      status = EXCLUDED.status,
+                      priority = EXCLUDED.priority,
+                      scheduled_at = EXCLUDED.scheduled_at,
+                      account = EXCLUDED.account,
+                      publish_url = EXCLUDED.publish_url,
+                      published_at = EXCLUDED.published_at,
+                      title = EXCLUDED.title,
+                      suitable = EXCLUDED.suitable,
+                      metrics = EXCLUDED.metrics,
+                      metrics_latest = EXCLUDED.metrics_latest,
+                      manual_review_risks = EXCLUDED.manual_review_risks,
+                      raw_payload = EXCLUDED.raw_payload,
+                      note = EXCLUDED.note,
+                      updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        task_id,
+                        content_id,
+                        platform,
+                        task.get("platform_name"),
+                        task.get("status", "pending_review"),
+                        task.get("priority"),
+                        task.get("scheduled_at"),
+                        task.get("account"),
+                        task.get("publish_url"),
+                        task.get("published_at"),
+                        task.get("title"),
+                        _bool_to_int(task.get("suitable")),
+                        _json(task.get("metrics", {})),
+                        _json(task.get("metrics_latest", {})),
+                        _json(task.get("manual_review_risks", [])),
+                        _json(task),
+                        task.get("note"),
+                        task.get("created_at") or updated_at,
+                        updated_at,
+                    ),
+                )
+                self._sync_metric_snapshots(conn, task, now)
+
+    def sync_feedback_report(self, report: dict[str, Any], *, report_type: str = "publish_feedback") -> None:
+        if not self.enabled or not report:
+            return
+        generated_at = str(report.get("generated_at") or utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO feedback_reports (report_type, report_path, generated_at, raw_payload, created_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s)
+                """,
+                (report_type, report.get("report_path"), generated_at, _json(report), utc_now()),
+            )
+
+    def sync_source_feedback_report(self, report: dict[str, Any]) -> None:
+        if not self.enabled or not report:
+            return
+        generated_at = str(report.get("generated_at") or utc_now())
+        suggestions = report.get("source_suggestions")
+        if not isinstance(suggestions, list):
+            suggestions = []
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO feedback_reports (report_type, report_path, generated_at, raw_payload, created_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s)
+                """,
+                ("source_feedback", report.get("report_path"), generated_at, _json(report), utc_now()),
+            )
+            for suggestion in suggestions:
+                if not isinstance(suggestion, dict):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO source_feedback_suggestions (
+                      source_key, source_type, source_name, action, recommended_weight_delta,
+                      related_content_ids, reasons, evidence_tasks, raw_payload, generated_at, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        suggestion.get("source_key", ""),
+                        suggestion.get("source_type"),
+                        suggestion.get("source_name"),
+                        suggestion.get("action", "keep"),
+                        _float_or_zero(suggestion.get("recommended_weight_delta")),
+                        _json(suggestion.get("related_content_ids", [])),
+                        _json(suggestion.get("reasons", [])),
+                        _json(suggestion.get("evidence_tasks", [])),
+                        _json(suggestion),
+                        generated_at,
+                        utc_now(),
+                    ),
+                )
+
+    def list_source_candidates(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT raw_payload::text
+                FROM source_candidates
+                ORDER BY updated_at DESC, id DESC
+                """
+            )
+            return [_json_dict(row[0]) for row in cursor.fetchall()]
+
+    def list_publish_tasks(self, output_dir: Path | None = None) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT raw_payload::text
+                FROM publish_tasks
+                ORDER BY updated_at DESC, id DESC
+                """
+            )
+            tasks = [_json_dict(row[0]) for row in cursor.fetchall()]
+        if output_dir is not None:
+            for task in tasks:
+                content_id = str(task.get("content_id") or "")
+                if content_id:
+                    task["_package_dir"] = output_dir / content_id
+        return tasks
+
+    def latest_feedback_report(self, report_type: str) -> dict[str, Any]:
+        if not self.enabled:
+            return {}
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT raw_payload::text
+                FROM feedback_reports
+                WHERE report_type = %s
+                ORDER BY generated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (report_type,),
+            )
+            row = cursor.fetchone()
+        return _json_dict(row[0]) if row else {}
+
+    def _sync_metric_snapshots(self, conn: Any, task: dict[str, Any], now: str) -> None:
+        snapshots = task.get("metric_snapshots")
+        if not isinstance(snapshots, list):
+            return
+        task_id = str(task.get("task_id") or "")
+        content_id = str(task.get("content_id") or "")
+        platform = str(task.get("platform") or "")
+        for snapshot in snapshots:
+            if not isinstance(snapshot, dict):
+                continue
+            label = str(snapshot.get("label") or "custom")
+            captured_at = str(snapshot.get("captured_at") or now)
+            conn.execute(
+                """
+                INSERT INTO publish_metric_snapshots (
+                  task_id, content_id, platform, label, captured_at, metrics, note, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (task_id, label, captured_at) DO UPDATE SET
+                  metrics = EXCLUDED.metrics,
+                  note = EXCLUDED.note
+                """,
+                (
+                    task_id,
+                    content_id,
+                    platform,
+                    label,
+                    captured_at,
+                    _json(snapshot.get("metrics", {})),
+                    snapshot.get("note"),
+                    now,
+                ),
+            )
+
 
 def _bool_to_int(value: Any) -> int | None:
     if value is None or value == "":
@@ -233,4 +499,34 @@ def _bool_to_int(value: Any) -> int | None:
     if isinstance(value, str):
         return 1 if value.strip().lower() in {"1", "true", "yes", "y", "on"} else 0
     return 1 if bool(value) else 0
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value if value is not None else {}, ensure_ascii=False, default=str)
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
 

@@ -98,6 +98,50 @@ def test_mock_discovery_includes_youtube_candidates(tmp_path: Path) -> None:
     assert any(candidate["source_type"] == "youtube_video" for candidate in pool["candidates"])
 
 
+def test_mock_discovery_includes_non_youtube_github_candidates(tmp_path: Path) -> None:
+    source_path = _write_web_sources(tmp_path)
+    candidate_path = tmp_path / "candidate_sources.json"
+
+    discover_sources(mock=True, source_path=source_path, candidate_path=candidate_path)
+
+    pool = load_candidate_pool(candidate_path)
+    source_types = {candidate["source_type"] for candidate in pool["candidates"]}
+    assert {"product_launch", "community_thread", "newsletter_issue", "blog_article"}.issubset(source_types)
+    assert any(candidate["decision"] in {"approve_candidate", "review"} for candidate in pool["candidates"] if candidate["source_type"] == "product_launch")
+
+
+def test_real_hacker_news_discovery_writes_community_candidate(tmp_path: Path, monkeypatch) -> None:
+    source_path = _write_hn_sources(tmp_path)
+    candidate_path = tmp_path / "candidate_sources.json"
+
+    def fake_http_json(url: str, *, user_agent: str) -> dict[str, object]:
+        assert "hn.algolia.com" in url
+        return {
+            "hits": [
+                {
+                    "objectID": "123",
+                    "title": "Show HN: AI agent workflow for developers",
+                    "url": "https://example.com/agent-workflow",
+                    "points": 220,
+                    "num_comments": 80,
+                    "author": "founder",
+                    "created_at": "2026-05-01T00:00:00Z",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(source_discovery, "_http_json", fake_http_json)
+
+    result = discover_sources(mock=False, source_path=source_path, candidate_path=candidate_path)
+
+    assert result["errors"] == []
+    pool = load_candidate_pool(candidate_path)
+    candidate = next(candidate for candidate in pool["candidates"] if candidate["source_type"] == "community_thread")
+    assert candidate["signals"]["platform"] == "hacker_news"
+    assert candidate["signals"]["points"] == 220
+    assert candidate["decision"] == "approve_candidate"
+
+
 def test_real_youtube_discovery_writes_video_candidate(tmp_path: Path, monkeypatch) -> None:
     source_path = _write_youtube_sources(tmp_path)
     candidate_path = tmp_path / "candidate_sources.json"
@@ -210,6 +254,82 @@ sources:
       - developer tools
       - productivity automation
     discovery_method: Track fast-moving developer videos.
+""".strip(),
+        encoding="utf-8",
+    )
+    return source_path
+
+
+def _write_web_sources(tmp_path: Path) -> Path:
+    source_path = tmp_path / "web_sources.yaml"
+    source_path.write_text(
+        """
+sources:
+  - source_id: product_hunt
+    source_type: product_hunt
+    name: Product Hunt
+    category: new_tools
+    trust_score: 7
+    status: active
+    urls:
+      website: https://www.producthunt.com/
+      ai: https://www.producthunt.com/categories/artificial-intelligence
+    watch_keywords:
+      - AI tools
+      - launch
+  - source_id: hacker_news
+    source_type: community
+    name: Hacker News
+    category: tech_trends
+    trust_score: 8
+    status: active
+    urls:
+      website: https://news.ycombinator.com/
+      newest: https://news.ycombinator.com/newest
+    watch_keywords:
+      - Show HN AI
+  - source_id: latent_space
+    source_type: newsletter
+    name: Latent Space
+    category: ai_engineering
+    trust_score: 8
+    status: active
+    urls:
+      newsletter: https://www.latent.space/
+    watch_keywords:
+      - AI engineering
+  - source_id: yc_blog
+    source_type: blog
+    name: YC Blog
+    category: startup
+    trust_score: 9
+    status: active
+    urls:
+      website: https://www.ycombinator.com/blog
+    watch_keywords:
+      - AI startup
+""".strip(),
+        encoding="utf-8",
+    )
+    return source_path
+
+
+def _write_hn_sources(tmp_path: Path) -> Path:
+    source_path = tmp_path / "hn_sources.yaml"
+    source_path.write_text(
+        """
+sources:
+  - source_id: hacker_news
+    source_type: community
+    name: Hacker News
+    category: tech_trends
+    trust_score: 8
+    status: active
+    urls:
+      website: https://news.ycombinator.com/
+    watch_keywords:
+      - Show HN AI agent
+    discovery_method: Watch Show HN and Launch HN threads.
 """.strip(),
         encoding="utf-8",
     )

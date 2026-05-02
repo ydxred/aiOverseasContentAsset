@@ -10,37 +10,45 @@ from typing import Any
 PLATFORMS = {
     "douyin": {
         "platform_name": "抖音",
-        "content_fit": "强钩子、强反差、项目故事",
+        "priority": 1,
+        "publish_stage": "primary",
+        "content_fit": "为什么火、海外工具观察、项目故事",
         "video_length": "30-90 秒",
         "key_metrics": ["完播", "互动", "转粉"],
         "focus": "开头 3 秒",
-        "style": "强钩子，强反差，突出项目故事和开头 3 秒。",
+        "style": "强钩子，强反差，突出为什么火、项目故事和开头 3 秒。",
         "tag_seed": ["AI工具", "效率工具", "自动化", "科技趋势"],
-        "notes": ["标题和封面要突出一个明确钩子。", "开头 3 秒必须讲清反差或收益点。", "避免夸大收益、免费额度或工具效果。"],
+        "notes": ["标题和封面要突出一个明确钩子。", "开头 3 秒必须讲清为什么值得关注。", "避免夸大免费额度、工具效果或商业结果。"],
     },
     "kuaishou": {
         "platform_name": "快手",
-        "content_fit": "接地气、赚钱案例、实操感",
+        "priority": 4,
+        "publish_stage": "secondary",
+        "content_fit": "接地气、海外案例、观察感",
         "video_length": "30-120 秒",
         "key_metrics": ["完播", "评论", "信任感"],
         "focus": "话说人话",
-        "style": "口语化，接地气，像给朋友解释，多讲实操感。",
-        "tag_seed": ["实用工具", "AI自动化", "普通人学AI", "经验分享"],
+        "style": "口语化，接地气，像给朋友解释，多讲观察和边界。",
+        "tag_seed": ["实用工具", "AI自动化", "AI观察", "经验分享"],
         "notes": ["简介建议保留口语感，少堆概念。", "话说人话，避免过多英文术语。", "首评可以引导观众补充使用体验。"],
     },
     "wechat_channels": {
         "platform_name": "微信视频号",
+        "priority": 2,
+        "publish_stage": "primary",
         "content_fit": "泛人群、转发价值、商业认知",
         "video_length": "1-3 分钟",
         "key_metrics": ["转发", "点赞", "完播"],
         "focus": "稳重、有观点",
         "style": "克制可信，强调观点、来源、核查和适用边界。",
-        "tag_seed": ["AI观察", "工具评测", "效率提升", "科技解读"],
+        "tag_seed": ["AI观察", "工具解读", "海外AI", "科技解读"],
         "notes": ["表达要克制，避免标题党。", "观点要稳，适合被转发给泛人群。", "建议在简介中保留来源和核查提醒。"],
     },
     "bilibili": {
         "platform_name": "B站",
-        "content_fit": "深度拆解、教程、复盘",
+        "priority": 3,
+        "publish_stage": "primary",
+        "content_fit": "深度拆解、工具解读、复盘",
         "video_length": "3-8 分钟",
         "key_metrics": ["收藏", "投币", "评论", "完播"],
         "focus": "信息密度",
@@ -50,13 +58,15 @@ PLATFORMS = {
     },
     "xiaohongshu": {
         "platform_name": "小红书",
+        "priority": 99,
+        "publish_stage": "deferred",
         "content_fit": "工具清单、项目笔记、方法论",
         "video_length": "30-90 秒/图文",
         "key_metrics": ["收藏", "搜索", "私信"],
         "focus": "标题和封面",
-        "style": "笔记感，标题和封面清楚，强调工具清单、项目笔记或方法论沉淀。",
+        "style": "先滞后处理，只保留可复制发布包；当前不作为口播和导演层的核心风格。",
         "tag_seed": ["AI工具", "工具清单", "效率方法", "项目笔记"],
-        "notes": ["标题和封面要像可收藏的笔记。", "适合补充步骤、清单或方法论。", "避免过度营销，保留真实使用限制。"],
+        "notes": ["当前阶段小红书先滞后处理。", "只保留发布包字段，不作为主投放平台。", "后续如果做图文/笔记化，再单独适配。"],
     },
 }
 
@@ -81,9 +91,10 @@ def generate_platform_publish_package(content_id: str, package_dir: Path) -> dic
     quality_check = _read_json(package_dir / "quality_check.json")
     publish_review = _read_json(package_dir / "publish_review.json")
     render_status = _read_json(package_dir / "render_status.json")
+    director_plan = _read_json(package_dir / "director_plan.json")
     script_text = _read_text(package_dir / "chinese_script.md")
 
-    context = _build_context(content_id, meta, analysis, risk_report, quality_check, publish_review, render_status, script_text)
+    context = _build_context(content_id, meta, analysis, risk_report, quality_check, publish_review, render_status, script_text, director_plan)
     platforms = {platform: _build_platform_asset(platform, context) for platform in PLATFORMS}
     package = {
         "schema_version": 1,
@@ -125,12 +136,13 @@ def _build_context(
     publish_review: dict[str, Any],
     render_status: dict[str, Any],
     script_text: str,
+    director_plan: dict[str, Any],
 ) -> dict[str, Any]:
     script_title = _extract_section(script_text, "标题").splitlines()[0:1]
     title = _clean_text(script_title[0]) if script_title else ""
     title = title or _clean_text(str(meta.get("title") or analysis.get("core_topic") or content_id))
-    voiceover = _extract_section(script_text, "口播稿")
-    summary = _clean_text(str(analysis.get("summary") or ""))
+    voiceover = _clean_text(str(director_plan.get("voiceover") or "")) or _extract_section(script_text, "口播稿")
+    summary = _first_sentence(voiceover) or _clean_text(str(analysis.get("summary") or ""))
     main_points = _as_text_list(analysis.get("main_points"))
     risks = _collect_risks(analysis, risk_report, quality_check, publish_review)
     needs_manual_check = _needs_manual_check(analysis, publish_review)
@@ -153,6 +165,8 @@ def _build_context(
         "risk_pass": risk_report.get("pass"),
         "quality_pass": quality_check.get("pass"),
         "topic": _clean_text(str(analysis.get("core_topic") or title)),
+        "content_type": str(analysis.get("content_type") or ""),
+        "director_style": str((director_plan.get("style") or {}).get("version") or ""),
     }
 
 
@@ -170,6 +184,8 @@ def _build_platform_asset(platform: str, context: dict[str, Any]) -> dict[str, A
     copy_block = _copy_block(title, description, hashtags, pinned_comment)
     return {
         "platform_name": config["platform_name"],
+        "priority": config["priority"],
+        "publish_stage": config["publish_stage"],
         "content_fit": config["content_fit"],
         "video_length": config["video_length"],
         "key_metrics": config["key_metrics"],
@@ -190,16 +206,23 @@ def _build_platform_asset(platform: str, context: dict[str, Any]) -> dict[str, A
 def _platform_title(platform: str, context: dict[str, Any]) -> str:
     title = _trim(context["title"], 44)
     topic = _trim(context["topic"], 28)
+    content_type = context.get("content_type", "")
+    if content_type == "ai_cli_agent":
+        developer_angle = f"开发者为什么关注 {topic}？"
+    elif content_type == "github_open_source_project":
+        developer_angle = f"{topic}：一个开源 AI 项目观察"
+    else:
+        developer_angle = f"{topic} 为什么突然火？"
     if platform == "douyin":
-        return _trim(f"别只看热闹，{topic}真正要核查的是这点", 38)
+        return _trim(developer_angle, 38)
     if platform == "kuaishou":
-        return _trim(f"{topic}，普通人先看懂这几个点", 42)
+        return _trim(f"海外 AI 工具观察：{topic}", 42)
     if platform == "wechat_channels":
-        return _trim(f"{topic}：一次克制的中文解读", 44)
+        return _trim(f"{topic}：一次海外 AI 机会观察", 44)
     if platform == "bilibili":
-        return _trim(f"{title}｜来源、看点和发布前核查提醒", 72)
+        return _trim(f"{title}｜为什么火、解决什么问题与边界", 72)
     if platform == "xiaohongshu":
-        return _trim(f"{topic}｜值得收藏的工具笔记", 36)
+        return _trim(f"{topic}｜海外 AI 工具笔记", 36)
     return title
 
 
@@ -207,21 +230,20 @@ def _platform_description(platform: str, context: dict[str, Any]) -> str:
     summary = context["summary"] or _first_sentence(context["voiceover"]) or context["topic"]
     points = "；".join(context["main_points"][:3])
     source = _source_line(context)
-    manual = "发布前必须人工核查：事实依据、来源上下文和版权边界。" if context["needs_manual_check"] else "已生成发布草稿，仍建议发布前做最终人工复核。"
     if platform == "douyin":
-        return _trim(f"{summary}\n\n关键不是跟风发布，而是先看清它到底解决什么问题。{manual}", 260)
+        return _trim(f"{summary}\n\n关键不是跟风，是看懂这个方向为什么突然变热。", 220)
     if platform == "kuaishou":
-        return _trim(f"{summary}\n\n我把重点整理成几个好懂的点：{points or context['topic']}。{manual}", 280)
+        return _trim(f"{summary}\n\n我把它到底解决什么、普通人能看懂什么趋势，拆成几个点。{points or context['topic']}。", 260)
     if platform == "wechat_channels":
-        return _trim(f"{summary}\n\n{source}\n本条为中文解读草稿，不承诺自动发布或工具效果。{manual}", 320)
+        return _trim(f"{summary}\n\n{source}\n这类工具还早，但它代表 AI 从回答问题走向执行任务。", 300)
     if platform == "bilibili":
         return _trim(
-            f"{summary}\n\n主要看点：{points or context['topic']}。\n{source}\n核查提醒：{manual}\n欢迎在评论区补充一手使用经验或来源修正。",
+            f"{summary}\n\n主要看点：{points or context['topic']}。\n{source}\n这期重点不是教程，而是拆它为什么火、解决什么问题，以及这个方向对中文用户有什么启发。",
             700,
         )
     if platform == "xiaohongshu":
         return _trim(
-            f"{summary}\n\n笔记重点：{points or context['topic']}。\n适合先收藏，再对照来源和自己的场景判断是否值得试用。{manual}",
+            f"{summary}\n\n小红书当前先滞后处理，这里只保留备用发布文案。",
             320,
         )
     return summary
@@ -240,20 +262,20 @@ def _platform_hashtags(platform: str, context: dict[str, Any]) -> list[str]:
 def _platform_cover_text(platform: str, context: dict[str, Any]) -> str:
     topic = _trim(context["topic"], 14)
     if platform == "douyin":
-        return _trim(f"{topic}\n别急着跟风", 22)
+        return _trim(f"{topic}\n为什么火", 22)
     if platform == "kuaishou":
-        return _trim(f"{topic}\n先看懂再用", 22)
+        return _trim(f"{topic}\n海外观察", 22)
     if platform == "wechat_channels":
-        return _trim(f"{topic}\n克制解读", 22)
+        return _trim(f"{topic}\n机会观察", 22)
     if platform == "bilibili":
-        return _trim(f"{topic}\n来源与核查清单", 28)
+        return _trim(f"{topic}\n为什么值得关注", 28)
     if platform == "xiaohongshu":
-        return _trim(f"{topic}\n工具笔记", 22)
+        return _trim(f"{topic}\nAI 工具笔记", 22)
     return topic
 
 
 def _platform_pinned_comment(platform: str, context: dict[str, Any]) -> str:
-    manual = "本条基于现有资料生成草稿，发布前必须人工核查关键事实与版权边界。" if context["needs_manual_check"] else "这是一份发布草稿，欢迎补充来源、版本变化和实际使用体验。"
+    manual = "如果你用过类似工具，欢迎补充真实体验，我会继续追这个方向。" if not context["needs_manual_check"] else "这类海外项目变化很快，评论区欢迎补充最新版本和真实体验。"
     if platform == "bilibili":
         return f"{manual} 如发现信息过期或表述不准确，请在评论区指出具体来源。"
     if platform == "wechat_channels":
@@ -282,6 +304,8 @@ def _manual_review_risks(context: dict[str, Any]) -> list[str]:
 
 
 def _platform_suitable(platform: str, context: dict[str, Any]) -> bool:
+    if PLATFORMS[platform].get("publish_stage") == "deferred":
+        return False
     if context["review_status"] == "rejected":
         return False
     if context["risk_pass"] is False or context["quality_pass"] is False:
@@ -293,6 +317,8 @@ def _platform_suitable(platform: str, context: dict[str, Any]) -> bool:
 
 def _suitability_reason(platform: str, context: dict[str, Any], suitable: bool) -> str:
     if not suitable:
+        if PLATFORMS[platform].get("publish_stage") == "deferred":
+            return "小红书当前先滞后处理，只保留发布包字段，不作为主投放平台。"
         if context["review_status"] == "rejected":
             return "发布审核为 rejected，不适合发布。"
         if context["risk_pass"] is False or context["quality_pass"] is False:
@@ -335,6 +361,8 @@ def _render_markdown(package: dict[str, Any]) -> str:
             [
                 f"## {asset['platform_name']} ({platform})",
                 "",
+                f"- priority: {asset['priority']}",
+                f"- publish_stage: {asset['publish_stage']}",
                 f"- suitable: {asset['suitable']}",
                 f"- suitability_reason: {asset['suitability_reason']}",
                 f"- cover_text: {asset['cover_text']}",

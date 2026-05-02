@@ -215,7 +215,7 @@ def test_web_feedback_board_renders_and_refreshes(tmp_path: Path) -> None:
         host, port = server.server_address
         with urlopen(f"http://{host}:{port}/feedback-board", timeout=5) as response:
             html = response.read().decode("utf-8")
-        assert "平台表现评分与反馈看板" in html
+        assert "分发反馈与源池复盘看板" in html
         assert "刷新反馈报告" in html
         assert "最佳平台" in html
         assert "时间窗口汇总" in html
@@ -224,7 +224,7 @@ def test_web_feedback_board_renders_and_refreshes(tmp_path: Path) -> None:
         request = Request(f"http://{host}:{port}/feedback-board/refresh", data=b"", method="POST")
         with urlopen(request, timeout=5) as response:
             refreshed_html = response.read().decode("utf-8")
-        assert "平台表现评分与反馈看板" in refreshed_html
+        assert "分发反馈与源池复盘看板" in refreshed_html
         assert (data_dir / "feedback_report.json").exists()
     finally:
         server.shutdown()

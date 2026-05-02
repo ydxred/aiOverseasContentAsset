@@ -103,10 +103,97 @@ CREATE TABLE IF NOT EXISTS feedback (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_candidates (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  candidate_id TEXT UNIQUE NOT NULL,
+  source_id TEXT,
+  source_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  category TEXT,
+  status TEXT NOT NULL,
+  decision TEXT,
+  score INTEGER,
+  reason TEXT,
+  signals JSONB,
+  discovered_from JSONB,
+  raw_payload JSONB,
+  review_package_content_id TEXT,
+  review_package_generated_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publish_tasks (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id TEXT UNIQUE NOT NULL,
+  content_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  platform_name TEXT,
+  status TEXT NOT NULL,
+  priority TEXT,
+  scheduled_at TEXT,
+  account TEXT,
+  publish_url TEXT,
+  published_at TEXT,
+  title TEXT,
+  suitable INTEGER,
+  metrics JSONB,
+  metrics_latest JSONB,
+  manual_review_risks JSONB,
+  raw_payload JSONB,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publish_metric_snapshots (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  content_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  label TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  metrics JSONB,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (task_id, label, captured_at)
+);
+
+CREATE TABLE IF NOT EXISTS feedback_reports (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  report_type TEXT NOT NULL,
+  report_path TEXT,
+  generated_at TEXT NOT NULL,
+  raw_payload JSONB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_feedback_suggestions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  source_key TEXT NOT NULL,
+  source_type TEXT,
+  source_name TEXT,
+  action TEXT NOT NULL,
+  recommended_weight_delta REAL DEFAULT 0,
+  related_content_ids JSONB,
+  reasons JSONB,
+  evidence_tasks JSONB,
+  raw_payload JSONB,
+  generated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_content_id ON tasks (content_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_content_id ON artifacts (content_id);
 CREATE INDEX IF NOT EXISTS idx_model_runs_content_id ON model_runs (content_id);
 CREATE INDEX IF NOT EXISTS idx_topic_opportunities_content_id ON topic_opportunities (content_id);
 CREATE INDEX IF NOT EXISTS idx_media_jobs_content_id ON media_jobs (content_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_content_id ON feedback (content_id);
+CREATE INDEX IF NOT EXISTS idx_source_candidates_source_id ON source_candidates (source_id);
+CREATE INDEX IF NOT EXISTS idx_source_candidates_status ON source_candidates (status);
+CREATE INDEX IF NOT EXISTS idx_publish_tasks_content_id ON publish_tasks (content_id);
+CREATE INDEX IF NOT EXISTS idx_publish_tasks_status ON publish_tasks (status);
+CREATE INDEX IF NOT EXISTS idx_publish_metric_snapshots_task_id ON publish_metric_snapshots (task_id);
+CREATE INDEX IF NOT EXISTS idx_source_feedback_suggestions_source_key ON source_feedback_suggestions (source_key);
 

@@ -1,6 +1,26 @@
 # Content Asset MVP
 
-第一版系统骨架实现一条克制的内容资产流水线：
+第一版系统骨架实现一条克制的内容资产流水线。当前定位不是泛 AI 视频，也不是 AI 赚钱教程，而是：
+
+```text
+海外 AI 商业机会 + AI 工具/CLI/开源项目解读 + 中文叙事视频资产
+```
+
+系统重点是解读、叙事、观察和拆解：说明为什么火、海外发生了什么、它解决什么问题，以及对中文用户/开发者/创作者/创业者的启发。所有输出都应避免收益承诺，保留事实核查和来源边界风控，不做灰产路径，不把海外案例包装成照做模板。
+
+支持的核心内容类型：
+
+```text
+ai_tool_explainer
+ai_cli_agent
+github_open_source_project
+overseas_ai_startup_case
+product_hunt_new_product
+ai_business_model_observation
+overseas_info_gap_story
+```
+
+基础流水线：
 
 ```text
 URL -> meta/audio placeholder -> transcript -> analysis -> score -> risk_report
@@ -11,7 +31,8 @@ URL -> meta/audio placeholder -> transcript -> analysis -> score -> risk_report
 
 ```text
 GitHub repo URL -> github_meta/readme/images/snapshot_status
--> github_analysis -> chinese_script -> title_options -> review_notes
+-> github_analysis -> score/risk/opportunity/quality
+-> chinese_script -> title_options -> review_notes
 ```
 
 审核包生成后可以继续生产竖屏视频：
@@ -233,7 +254,7 @@ http://127.0.0.1:8000/status
 
 ```text
 输入 URL 并运行 mock / 真实流水线
-输入 GitHub repo URL 生成 AI 项目解读审核包
+输入 GitHub repo URL 生成 AI 工具/CLI/开源项目解读审核包
 选择运行到指定阶段
 查看审核包列表
 查看 review_notes、chinese_script、analysis、score、risk_report、github_meta、readme、github_analysis、snapshot_status 等 artifacts
@@ -243,7 +264,7 @@ http://127.0.0.1:8000/status
 在审核包详情页点击“生成视频”，从 chinese_script.md 生成 final_video.mp4；默认勾选离线 TTS fallback
 查看账号配置：展示五个平台账号、启用状态、发布入口和自动发布开关说明
 发布看板：对单个任务或所有 ready/scheduled 任务执行本地 dry-run 发布检查
-反馈看板：基于发布指标生成平台表现评分、内容洞察和源池权重建议
+反馈看板：基于发布指标生成分发反馈、叙事资产洞察和海外机会源池权重建议
 查看系统状态：mock 默认状态、DATABASE_URL、psql、yt-dlp、ffmpeg、输出目录、审核包数量
 ```
 
@@ -298,7 +319,7 @@ keyword          可生成 GitHub / YouTube / Google 搜索的关键词组
   discovery_method: Track X posts, project launches, interviews, and changelogs.
 ```
 
-人物源重要，是因为高价值创作者通常比平台热榜更早暴露真实产品实验、收入信号、失败复盘和市场迁移。系统先把 Pieter Levels / levelsio 这类源作为固定观察对象，再用关键词与项目源扩散，可以减少随机刷推荐流带来的噪声。
+人物源重要，是因为高价值创作者通常比平台热榜更早暴露真实产品实验、商业模式信号、失败复盘和市场迁移。系统先把 Pieter Levels / levelsio 这类源作为固定观察对象，再用关键词与项目源扩散，可以减少随机刷推荐流带来的噪声；相关数字只作为待核查背景，不作为结果承诺。
 
 ## mock 与真实模式差异
 

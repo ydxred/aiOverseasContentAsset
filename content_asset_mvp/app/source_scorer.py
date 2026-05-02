@@ -22,6 +22,13 @@ POSITIVE_KEYWORDS = {
     "founder": 5,
     "startup": 5,
     "product": 4,
+    "product hunt": 8,
+    "launch": 7,
+    "show hn": 8,
+    "hacker news": 7,
+    "newsletter": 5,
+    "blog": 4,
+    "article": 4,
 }
 
 NEGATIVE_KEYWORDS = {
@@ -105,6 +112,21 @@ def score_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     if comments >= 500:
         score += 4
         reasons.append("+4 youtube_comments_500")
+
+    votes = _as_int(signals.get("votes"), default=0)
+    points = _as_int(signals.get("points"), default=0)
+    if votes >= 300:
+        score += 10
+        reasons.append("+10 product_votes_300")
+    elif votes >= 100:
+        score += 6
+        reasons.append("+6 product_votes_100")
+    if points >= 200:
+        score += 10
+        reasons.append("+10 community_points_200")
+    elif points >= 50:
+        score += 6
+        reasons.append("+6 community_points_50")
 
     updated_at = str(signals.get("updated_at") or "")
     if _updated_recently(updated_at, days=180):
