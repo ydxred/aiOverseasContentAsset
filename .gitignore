@@ -9,6 +9,8 @@ content_asset_mvp/.env
 .venv/
 venv/
 content_asset_mvp/.venv/
+node_modules/
+content_asset_mvp/video_engine/remotion/node_modules/
 
 logs/
 workspace/
