@@ -244,7 +244,7 @@ def test_offline_render_generates_final_video(tmp_path: Path) -> None:
     assert render_manifest["render_parameters"]["video_quality_score"] == video_quality_report["video_quality_score"]
     assert render_manifest["render_parameters"]["architecture_version"] == "video_pipeline_v6_slice"
     assert render_manifest["render_parameters"]["render_engine_preferred"] == "remotion"
-    assert render_manifest["render_parameters"]["render_engine_actual"] == "ffmpeg"
+    assert render_manifest["render_parameters"]["render_engine_actual"] == remotion_status["render_engine_actual"]
     assert render_manifest["render_parameters"]["audio_mastered"] == (audio_mastering_status["success"] is True)
     assert render_manifest["render_parameters"]["visual_qc_score"] == visual_qc_report["score"]
     assert render_manifest["render_parameters"]["visual_qc_pass"] == visual_qc_report["pass"]
@@ -252,7 +252,7 @@ def test_offline_render_generates_final_video(tmp_path: Path) -> None:
     assert render_manifest_v6["composition"] == "DouyinExplainer"
     assert render_manifest_v6["fallback_engine"] == "ffmpeg"
     assert remotion_status["preferred_engine"] == "remotion"
-    assert remotion_status["render_engine_actual"] == "ffmpeg"
+    assert remotion_status["render_engine_actual"] in {"remotion", "ffmpeg"}
     assert visual_qc_report["metrics"]["shot_count"] >= 10
     assert video_quality_report["publish_ready"] is False
     assert video_quality_report["voice_quality_score"] < 50
@@ -260,7 +260,12 @@ def test_offline_render_generates_final_video(tmp_path: Path) -> None:
     assert render_status["template_id"] == "overseas_ai_narrative_v1"
     assert render_status["director_status"]["status"] == "enabled"
     assert render_status["director_status"]["shot_count"] >= 10
-    assert render_status["visual_quality"] in {"brand_template_v1", "director_v3_large_scene", "director_v4_multi_shot"}
+    assert render_status["visual_quality"] in {
+        "brand_template_v1",
+        "director_v3_large_scene",
+        "director_v4_multi_shot",
+        "remotion_douyin_explainer_v1",
+    }
     assert brand_template["brand_name"] == "Overseas AI Radar"
 
 

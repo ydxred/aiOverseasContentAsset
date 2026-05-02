@@ -13,7 +13,7 @@ from typing import Any
 
 from .audio_mastering import master_voice_audio
 from .artifact_writer import ArtifactWriter
-from .remotion_renderer import probe_remotion_renderer
+from .remotion_renderer import probe_remotion_renderer, render_remotion_video
 from .render_manifest import build_v6_render_manifest
 from .subtitle_engine import build_subtitle_plan
 from .tts_engine import synthesize_narration
@@ -172,22 +172,59 @@ def render_video_package(
     legacy_subtitle_path = writer.output_path("subtitles.srt")
     legacy_subtitle_path.write_text(subtitle_path.read_text(encoding="utf-8"), encoding="utf-8")
 
-    remotion_status = probe_remotion_renderer(Path(__file__).resolve().parents[1])
-    remotion_status_path = writer.write_json("remotion_status.json", remotion_status)
+    project_root = Path(__file__).resolve().parents[1]
+    remotion_status = probe_remotion_renderer(project_root)
     video_path = writer.output_path("final_video.mp4")
-    render_status = render_vertical_video(
-        mastered_voice_path,
-        burned_subtitle_path,
-        video_path,
-        duration=duration,
-        ffmpeg=ffmpeg,
-        subtitle_mode=burned_subtitle_mode,
-        brand_template=brand_template,
-        cover_status=cover_status,
-        visual_asset_path=visual_asset_path,
-        visual_asset_status=visual_asset_status,
-        director_plan=director_plan.as_dict(),
+    render_status: dict[str, Any] = {}
+    if remotion_status.get("runtime_available"):
+        remotion_status, render_status = render_remotion_video(
+            project_root=project_root,
+            content_id=content_id,
+            title=title,
+            duration_seconds=duration,
+            audio_path=mastered_voice_path,
+            subtitle_plan=subtitle_plan,
+            output_dir=writer.output_dir,
+            final_video_path=video_path,
+            cover_path=cover_path,
+            evidence_image_path=visual_asset_path,
+        )
+    if remotion_status.get("render_engine_actual") != "remotion":
+        render_status = render_vertical_video(
+            mastered_voice_path,
+            burned_subtitle_path,
+            video_path,
+            duration=duration,
+            ffmpeg=ffmpeg,
+            subtitle_mode=burned_subtitle_mode,
+            brand_template=brand_template,
+            cover_status=cover_status,
+            visual_asset_path=visual_asset_path,
+            visual_asset_status=visual_asset_status,
+            director_plan=director_plan.as_dict(),
+        )
+    remotion_status_path = writer.write_json("remotion_status.json", remotion_status)
+    render_status.setdefault("video_path", str(video_path))
+    render_status.setdefault("voice_path", str(mastered_voice_path))
+    render_status.setdefault("subtitle_path", str(burned_subtitle_path))
+    render_status.setdefault("subtitle_mode", burned_subtitle_mode)
+    render_status.setdefault("duration_seconds", duration)
+    render_status.setdefault("resolution", "1080x1920")
+    render_status.setdefault("subtitle_burned", True)
+    render_status.setdefault("template_id", brand_template.get("template_id", BRAND_TEMPLATE_ID))
+    render_status.setdefault("brand_name", brand_template.get("brand_name", BRAND_NAME))
+    render_status.setdefault("cover_status", cover_status or {})
+    render_status.setdefault("visual_asset_status", visual_asset_status or {"status": "missing"})
+    render_status.setdefault(
+        "director_status",
+        {
+            "status": "enabled",
+            "scene_count": len(director_plan.as_dict().get("scenes", [])),
+            "shot_count": len(director_plan.as_dict().get("shots", [])),
+            "style": director_plan.style.get("version", ""),
+        },
     )
+    render_status.setdefault("visual_quality", "remotion_douyin_explainer_v1" if remotion_status.get("render_engine_actual") == "remotion" else "brand_template_v1")
     generated_at = _utc_now_iso()
     video_version = str(video_path.stat().st_mtime_ns) if video_path.exists() else ""
     render_status.update(

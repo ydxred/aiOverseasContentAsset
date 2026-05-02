@@ -1,4 +1,5 @@
 import React from 'react';
+import {staticFile} from 'remotion';
 import {theme} from '../styles/theme';
 
 export const ScreenshotFrame: React.FC<{src?: string; caption?: string}> = ({src, caption}) => {
@@ -18,7 +19,7 @@ export const ScreenshotFrame: React.FC<{src?: string; caption?: string}> = ({src
       }}
     >
       {src ? (
-        <img src={src} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+        <img src={toAssetSource(src)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
       ) : (
         <div style={{display: 'grid', placeItems: 'center', height: '100%', color: theme.colors.muted, fontSize: 34}}>
           Evidence visual placeholder
@@ -31,4 +32,11 @@ export const ScreenshotFrame: React.FC<{src?: string; caption?: string}> = ({src
       ) : null}
     </div>
   );
+};
+
+const toAssetSource = (src: string) => {
+  if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('file:')) {
+    return src;
+  }
+  return staticFile(src);
 };

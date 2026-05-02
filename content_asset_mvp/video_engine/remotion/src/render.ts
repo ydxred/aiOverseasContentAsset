@@ -5,12 +5,13 @@ import path from 'path';
 type RenderArgs = {
   output: string;
   title?: string;
+  durationSeconds?: number;
   audioPath?: string;
   subtitles?: unknown[];
 };
 
 export const renderDouyinExplainer = async (args: RenderArgs) => {
-  const entry = path.join(process.cwd(), 'src', 'Root.tsx');
+  const entry = path.join(process.cwd(), 'src', 'index.ts');
   const bundleLocation = await bundle(entry);
   const composition = await selectComposition({
     serveUrl: bundleLocation,

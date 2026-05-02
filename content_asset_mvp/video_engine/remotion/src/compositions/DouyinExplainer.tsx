@@ -8,6 +8,7 @@ import {theme} from '../styles/theme';
 
 export type DouyinExplainerProps = {
   title?: string;
+  durationSeconds?: number;
   audioPath?: string;
   subtitles?: SubtitleCue[];
   evidenceImage?: string;
@@ -29,7 +30,14 @@ export const DouyinExplainer: React.FC<DouyinExplainerProps> = ({
         <ScreenshotFrame src={evidenceImage} caption="Evidence and product context" />
       </Sequence>
       <SubtitleLayer subtitles={subtitles} />
-      {audioPath ? <Audio src={audioPath.startsWith('http') ? audioPath : staticFile(audioPath)} /> : null}
+      {audioPath ? <Audio src={toAssetSource(audioPath)} /> : null}
     </AbsoluteFill>
   );
+};
+
+const toAssetSource = (src: string) => {
+  if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('file:')) {
+    return src;
+  }
+  return staticFile(src);
 };

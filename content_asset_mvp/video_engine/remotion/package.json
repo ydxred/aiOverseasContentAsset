@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "render:douyin": "remotion render src/Root.tsx DouyinExplainer ../../output/remotion-preview.mp4",
-    "preview": "remotion preview src/Root.tsx"
+    "render:douyin": "remotion render src/index.ts DouyinExplainer ../../output/remotion-preview.mp4",
+    "preview": "remotion preview src/index.ts"
   },
   "dependencies": {
     "@remotion/bundler": "latest",
