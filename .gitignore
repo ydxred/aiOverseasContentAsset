@@ -9,6 +9,7 @@ content_asset_mvp/.env
 .venv/
 venv/
 content_asset_mvp/.venv/
+content_asset_mvp/.venv312/
 node_modules/
 content_asset_mvp/video_engine/remotion/node_modules/
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from argparse import Namespace
 from urllib.parse import urlencode
@@ -40,6 +41,8 @@ def test_list_output_packages_newest_first(tmp_path: Path) -> None:
     new = output_dir / "new"
     old.mkdir(parents=True)
     new.mkdir()
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+    os.utime(new, (1_700_000_100, 1_700_000_100))
 
     packages = list_output_packages(output_dir)
 
