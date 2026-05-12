@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-from .artifact_writer import ArtifactWriter
+from .artifact_writer import ArtifactWriter, stage_subdir
+from .browser_agent import BROWSER_AGENT_TASKS
 from .config import load_settings
 from .db import Database
 from .downloader import check_download_dependencies, make_content_id
@@ -57,6 +58,9 @@ DISPLAY_ARTIFACTS = [
     "readme.md",
     "readme_images.json",
     "snapshot_status.json",
+    "browser_agent_status.json",
+    "browser_agent_assets.json",
+    "browser_agent_report.json",
     "review_notes.md",
     "chinese_script.md",
     "quality_check.json",
@@ -185,23 +189,77 @@ def _layout(title: str, body: str) -> str:
     .video-list {{ display: grid; gap: 18px; }}
     .video-card {{
       display: grid;
-      grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+      /* 主预览现在是 16:9，比原来的 9:16 竖版宽 hist / 矮，左列给大点空间
+         免得视频被压成一条。右列放标题 / 状态 / 按钮 / 技术参数。 */
+      grid-template-columns: minmax(360px, 540px) minmax(0, 1fr);
       gap: 18px;
       align-items: start;
     }}
+    .video-preview-landscape .video-player {{ aspect-ratio: 16 / 9; max-height: none; }}
+    .video-preview-portrait .video-player {{ aspect-ratio: 9 / 16; max-height: 560px; }}
     .video-card video {{ margin-top: 0; }}
-    .video-main h2 {{ margin-top: 0; margin-bottom: 8px; }}
-    .video-actions a, .video-actions form {{ display: inline-block; margin-right: 10px; }}
-    .video-actions form button {{ margin-top: 8px; }}
+    .video-main h2 {{ margin-top: 0; margin-bottom: 6px; font-size: 18px; line-height: 1.35; }}
+    .video-meta-line {{ color: var(--muted); font-size: 13px; margin-bottom: 10px; }}
+    .video-meta-line code {{ background: #f1f5f9; padding: 1px 6px; border-radius: 4px; font-size: 12px; }}
+    .status-row {{ margin: 6px 0 10px; display: flex; flex-wrap: wrap; gap: 6px; }}
+    .status-pill {{ display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }}
+    .status-pill.ok    {{ background: #dcfce7; color: #166534; }}
+    .status-pill.warn  {{ background: #fef3c7; color: #92400e; }}
+    .status-pill.bad   {{ background: #fee2e2; color: #991b1b; }}
+    .status-pill.info  {{ background: #e0e7ff; color: #3730a3; }}
+    .video-hook {{
+      margin: 8px 0 12px; padding: 10px 12px;
+      background: #f8fafc; border-left: 3px solid var(--accent);
+      border-radius: 6px; font-size: 14px; line-height: 1.55;
+    }}
+    .score-gap {{
+      margin: 8px 0 12px; padding: 10px 12px;
+      background: #fffbeb; border-left: 3px solid #f59e0b;
+      border-radius: 6px; font-size: 13px; line-height: 1.55;
+    }}
+    .score-gap ul {{ margin: 6px 0 0; padding-left: 18px; }}
+    .score-gap li {{ margin: 2px 0; }}
+    .video-hook .hook-label {{ display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }}
+    .video-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; align-items: center; }}
+    .video-actions form {{ margin: 0; display: inline-block; }}
+    .video-actions form button {{ margin: 0; }}
+    .btn {{
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 7px 12px; border-radius: 8px;
+      background: #f1f5f9; color: #1e293b; font-size: 13px; font-weight: 600;
+      text-decoration: none; border: 1px solid var(--line);
+    }}
+    .btn:hover {{ background: #e2e8f0; }}
+    .btn.btn-primary {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+    .btn.btn-primary:hover {{ background: #1d4ed8; }}
+    .btn.btn-ghost {{ background: transparent; color: var(--muted); border-color: transparent; }}
+    .btn.btn-ghost:hover {{ background: #f1f5f9; color: #1e293b; }}
+    .video-tech {{ margin-top: 10px; }}
+    .video-tech summary {{ font-size: 13px; color: var(--muted); }}
+    .video-tech .tech-grid {{ margin-top: 8px; padding: 10px; background: #f8fafc; border-radius: 6px; font-size: 13px; }}
+    .video-tech .tech-grid p {{ margin: 4px 0; }}
     .platform-summary {{ margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }}
-    .platform-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }}
-    .platform-card textarea {{ min-height: 170px; font-size: 13px; line-height: 1.45; }}
+    .platform-summary > summary {{ font-size: 14px; font-weight: 700; color: var(--accent); }}
+    /* 把五平台文案区从 video-main 右列里"放出来"，跨满整张 video-card —
+       否则右列被视频预览的 360px 卡死、左列在视频结束后留出大片空白没人用。 */
+    .video-card > .platform-summary {{ grid-column: 1 / -1; margin-top: 4px; border-top: none; padding-top: 4px; }}
+    .platform-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; }}
+    .platform-card {{ display: flex; flex-direction: column; gap: 8px; }}
+    .platform-card .platform-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
+    .platform-card h3 {{ margin: 0; font-size: 16px; }}
+    .platform-card .platform-meta {{ font-size: 12px; margin: 0; line-height: 1.45; }}
+    .platform-card label {{ font-size: 12px; color: var(--muted); margin: 4px 0 -4px; display: block; }}
+    .platform-card textarea {{ min-height: 180px; font-size: 13px; line-height: 1.5; padding: 8px 10px; resize: vertical; }}
+    .platform-card .platform-cover {{ font-size: 12px; margin: 4px 0 0; color: #334155; }}
+    .platform-card details {{ margin: 4px 0 0; }}
+    .platform-card details summary {{ font-size: 12px; }}
+    .platform-card details ul {{ margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.5; }}
     details {{ margin-top: 10px; }}
     summary {{ cursor: pointer; color: var(--accent); }}
     @media (max-width: 760px) {{
       .video-card {{ grid-template-columns: 1fr; }}
     }}
-    .pill {{ display: inline-block; padding: 3px 8px; margin: 0 6px 6px 0; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 13px; }}
+    .pill {{ display: inline-block; padding: 3px 8px; margin: 0 6px 6px 0; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; }}
     pre {{
       white-space: pre-wrap;
       word-break: break-word;
@@ -263,20 +321,20 @@ def list_output_packages(output_dir: Path) -> list[Path]:
 def list_rendered_videos(output_dir: Path) -> list[dict[str, Any]]:
     videos: list[dict[str, Any]] = []
     for package_dir in list_output_packages(output_dir):
-        video_path = package_dir / "final_video.mp4"
+        video_path = stage_subdir(package_dir, "final_video.mp4")
         if not video_path.exists():
             continue
-        meta = _read_json(package_dir / "meta.json")
-        render_status = _read_json(package_dir / "render_status.json")
-        render_manifest = _read_json(package_dir / "video_render_manifest.json")
+        meta = _read_json(stage_subdir(package_dir, "meta.json"))
+        render_status = _read_json(stage_subdir(package_dir, "render_status.json"))
+        render_manifest = _read_json(stage_subdir(package_dir, "video_render_manifest.json"))
         render_parameters = render_manifest.get("render_parameters", {}) if isinstance(render_manifest.get("render_parameters"), dict) else {}
-        brand_template = _read_json(package_dir / "brand_template.json")
-        tts_status = _read_json(package_dir / "tts_status.json")
-        translation_status = _read_json(package_dir / "subtitle_translation_status.json")
-        publish_review = _read_json(package_dir / "publish_review.json")
-        video_quality_report = _read_json(package_dir / "video_quality_report.json")
-        visual_qc_report = _read_json(package_dir / "visual_qc_report.json")
-        remotion_status = _read_json(package_dir / "remotion_status.json")
+        brand_template = _read_json(stage_subdir(package_dir, "brand_template.json"))
+        tts_status = _read_json(stage_subdir(package_dir, "tts_status.json"))
+        translation_status = _read_json(stage_subdir(package_dir, "subtitle_translation_status.json"))
+        publish_review = _read_json(stage_subdir(package_dir, "publish_review.json"))
+        video_quality_report = _read_json(stage_subdir(package_dir, "video_quality_report.json"))
+        visual_qc_report = _read_json(stage_subdir(package_dir, "visual_qc_report.json"))
+        remotion_status = _read_json(stage_subdir(package_dir, "remotion_status.json"))
         video_version = str(render_manifest.get("video_version") or render_status.get("video_version") or video_path.stat().st_mtime_ns)
         generated_at = str(render_manifest.get("generated_at") or render_status.get("generated_at") or "")
         videos.append(
@@ -297,7 +355,23 @@ def list_rendered_videos(output_dir: Path) -> list[dict[str, Any]]:
                 "translation_mode": render_parameters.get("translation_mode") or translation_status.get("mode", "-"),
                 "duration_seconds": render_parameters.get("duration_seconds") or render_status.get("duration_seconds", "-"),
                 "video_quality_score": render_parameters.get("video_quality_score") or video_quality_report.get("video_quality_score", "-"),
-                "publish_ready": render_parameters.get("publish_ready") if "publish_ready" in render_parameters else video_quality_report.get("publish_ready", False),
+                # 主成片方向 / 分辨率。老 manifest 里没有这俩字段，回退到 render_status。
+                "orientation": render_parameters.get("orientation") or render_status.get("orientation", ""),
+                "resolution": render_parameters.get("resolution") or render_status.get("resolution", ""),
+                "quality_tier": (
+                    render_parameters.get("quality_tier")
+                    or render_status.get("quality_tier")
+                    or "release"
+                ),
+                # video_quality_report 是最新算的，render_parameters 里的 publish_ready
+                # 只是 manifest 的 snapshot，公式升级后会落后——所以 report 优先。
+                "publish_ready": (
+                    video_quality_report.get("publish_ready")
+                    if "publish_ready" in video_quality_report
+                    else render_parameters.get("publish_ready", False)
+                ),
+                "needs_human_review": video_quality_report.get("needs_human_review", False),
+                "score_gap_hints": video_quality_report.get("score_gap_hints", []),
                 "architecture_version": render_parameters.get("architecture_version", "-"),
                 "render_engine_actual": render_parameters.get("render_engine_actual") or remotion_status.get("render_engine_actual", "-"),
                 "visual_qc_score": render_parameters.get("visual_qc_score") or visual_qc_report.get("score", "-"),
@@ -306,7 +380,7 @@ def list_rendered_videos(output_dir: Path) -> list[dict[str, Any]]:
                 "remotion_reason": remotion_status.get("reason", ""),
                 "blocking_reasons": video_quality_report.get("blocking_reasons", []),
                 "publish_status": publish_review.get("status", "pending"),
-                "platform_package_exists": (package_dir / "platform_publish_package.json").exists(),
+                "platform_package_exists": (stage_subdir(package_dir, "platform_publish_package.json")).exists(),
             }
         )
     return sorted(videos, key=lambda item: (str(item.get("generated_at") or ""), str(item.get("video_version") or "")), reverse=True)
@@ -318,17 +392,22 @@ def safe_artifact_path(output_dir: Path, content_id: str, filename: str) -> Path
     if not ARTIFACT_RE.fullmatch(filename):
         raise ValueError("Invalid artifact filename")
     package_dir = (output_dir / content_id).resolve()
-    artifact_path = (package_dir / filename).resolve()
-    if output_dir.resolve() not in artifact_path.parents:
+    # Tier B archive routes most artifacts (final_video.mp4,
+    # video_render_manifest.json, subtitles*.srt ...) into stage subdirs
+    # like 07_render_output/, 06_render_props/, 05_subtitle/. ``stage_subdir``
+    # falls back to the legacy flat path when the staged copy doesn't exist,
+    # so half-migrated candidates keep working.
+    artifact_path = stage_subdir(package_dir, filename).resolve()
+    if package_dir != artifact_path and package_dir not in artifact_path.parents:
         raise ValueError("Invalid artifact path")
     return artifact_path
 
 
 def _summary_html(package_dir: Path) -> str:
-    meta = _read_json(package_dir / "meta.json")
+    meta = _read_json(stage_subdir(package_dir, "meta.json"))
     if meta.get("source_type") == "github_repo":
-        github_meta = _read_json(package_dir / "github_meta.json")
-        analysis = _read_json(package_dir / "github_analysis.json")
+        github_meta = _read_json(stage_subdir(package_dir, "github_meta.json"))
+        analysis = _read_json(stage_subdir(package_dir, "github_analysis.json"))
         fields = [
             ("content_id", package_dir.name),
             ("repo", github_meta.get("full_name") or meta.get("title", "-")),
@@ -340,10 +419,10 @@ def _summary_html(package_dir: Path) -> str:
         ]
         cards = "".join(f"<div class='item'><div class='muted'>{_escape(k)}</div><strong>{_escape(v)}</strong></div>" for k, v in fields)
         return f"<div class='grid'>{cards}</div>"
-    score = _read_json(package_dir / "score.json")
-    risk = _read_json(package_dir / "risk_report.json")
-    quality = _read_json(package_dir / "quality_check.json")
-    transcript_status = _read_json(package_dir / "youtube_transcript.json")
+    score = _read_json(stage_subdir(package_dir, "score.json"))
+    risk = _read_json(stage_subdir(package_dir, "risk_report.json"))
+    quality = _read_json(stage_subdir(package_dir, "quality_check.json"))
+    transcript_status = _read_json(stage_subdir(package_dir, "youtube_transcript.json"))
     fields = [
         ("content_id", package_dir.name),
         ("title", meta.get("title", "-")),
@@ -428,6 +507,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/render-video":
                 self._render_video(form)
+                return
+            if parsed.path == "/browser-agent-report":
+                self._browser_agent_report(form)
                 return
             if parsed.path == "/publish-review":
                 self._publish_review(form)
@@ -799,7 +881,7 @@ class WebHandler(BaseHTTPRequestHandler):
             return _layout("叙事资产审核包", body)
         items = []
         for package_dir in packages:
-            meta = _read_json(package_dir / "meta.json")
+            meta = _read_json(stage_subdir(package_dir, "meta.json"))
             title = meta.get("title") or package_dir.name
             items.append(
                 "<div class='item'>"
@@ -831,58 +913,211 @@ class WebHandler(BaseHTTPRequestHandler):
             package_dir = self.server.output_dir / content_id
             video_version = _escape(str(video.get("video_version") or ""))
             video_url = f"/artifact/{_escape(content_id)}/final_video.mp4?v={video_version}"
+            # ``final_video.mp4`` 是 16:9 主成片。若历史遗留还存在独立的
+            # ``final_video_landscape.mp4`` 就忽略（主产物已覆盖）。
+            # 独立 ``final_video_portrait.mp4`` 仅当调用方显式 ``--render-portrait``
+            # 才会产出——存在时作为"额外 9:16 补切"展示。
+            portrait_path = stage_subdir(package_dir, "final_video_portrait.mp4")
+            has_portrait = portrait_path.exists()
+            portrait_url = (
+                f"/artifact/{_escape(content_id)}/final_video_portrait.mp4?v={video_version}"
+                if has_portrait
+                else ""
+            )
             generated_at = _escape(str(video.get("generated_at") or "-"))
             resource_dir = _escape(str(video.get("resource_dir") or package_dir))
             blocking_reasons = video.get("blocking_reasons", [])
             blocking_text = "；".join(str(reason) for reason in blocking_reasons) if isinstance(blocking_reasons, list) else str(blocking_reasons or "")
             publish_ready = bool(video.get("publish_ready"))
             remotion_reason = str(video.get("remotion_reason") or "")
-            platform_package = _read_json(package_dir / "platform_publish_package.json")
+            platform_package = _read_json(stage_subdir(package_dir, "platform_publish_package.json"))
             platform_ready = bool(platform_package)
             platform_assets_html = ""
             if platform_ready:
+                # Default to OPEN — the five-platform copy is the single most
+                # important deliverable on this page (运营/审核第一眼就是要它).
                 platform_assets_html = (
-                    "<details class='platform-summary'><summary><strong>展开五平台发布文案</strong>（直接复制粘贴）</summary>"
+                    "<details class='platform-summary' open><summary>📋 五平台发布文案（直接复制粘贴）</summary>"
                     f"{_platform_assets_grid(platform_package)}"
                     "</details>"
                 )
-            items.append(
-                "<div class='card video-card'>"
-                "<div class='video-preview'>"
-                f"<video class='video-player' controls preload='metadata' src='{video_url}'></video>"
+            portrait_preview_html = (
+                "<div class='video-preview video-preview-portrait'>"
+                "<div class='muted'>9:16 竖版补切（抖音原生竖屏）</div>"
+                f"<video class='video-player' controls preload='metadata' src='{portrait_url}'></video>"
                 "</div>"
-                "<div class='video-main'>"
-                f"<h2>{_escape(video.get('title', content_id))}</h2>"
-                f"<div class='muted'>{_escape(content_id)} · {_escape(video.get('source_type', '-'))} · {size_mb:.1f} MB · {duration}</div>"
-                f"<div class='muted'>生成时间：{generated_at} · video_version={video_version}</div>"
-                f"<div class='muted'>资源目录：<code>{resource_dir}</code></div>"
-                "<p>"
-                f"<span class='pill'>TTS: {_escape(video.get('tts_mode', '-'))}</span>"
+                if has_portrait
+                else ""
+            )
+
+            # Build the top status pill row — only the things a reviewer
+            # decides "publish or not" by. Everything else (字幕模式/v6 版本
+            # /翻译模式/Visual QC) is debug noise and goes inside <details>.
+            tts_mode = str(video.get("tts_mode") or "-")
+            tts_is_real = "doubao" in tts_mode.lower() or "cosy" in tts_mode.lower() or "openai" in tts_mode.lower()
+            quality_score = video.get("video_quality_score", "-")
+            try:
+                quality_int = int(quality_score)
+                quality_class = "ok" if quality_int >= 80 else ("warn" if quality_int >= 60 else "bad")
+            except (TypeError, ValueError):
+                quality_int = None
+                quality_class = "info"
+            needs_review = bool(video.get("needs_human_review"))
+            gap_hints = video.get("score_gap_hints") or []
+            status_pills = []
+            if publish_ready:
+                status_pills.append("<span class='status-pill ok'>✅ 可发布 (≥95)</span>")
+            elif needs_review:
+                # 80-94 档：公式没硬阻断、但没到 95 门槛 → 人工检查
+                status_pills.append("<span class='status-pill warn'>⚠️ 人工检查 (80-94)</span>")
+            else:
+                status_pills.append("<span class='status-pill bad'>❌ 阻断 (&lt;80)</span>")
+            if quality_int is not None:
+                status_pills.append(f"<span class='status-pill {quality_class}'>质量分 {quality_int}</span>")
+            else:
+                status_pills.append(f"<span class='status-pill info'>质量分 {_escape(quality_score)}</span>")
+            status_pills.append(
+                f"<span class='status-pill {'ok' if tts_is_real else 'warn'}'>"
+                f"{'🎙️ 真人声' if tts_is_real else '⚠️ 静音兜底'}</span>"
+            )
+            status_pills.append(
+                f"<span class='status-pill {'ok' if platform_ready else 'warn'}'>"
+                f"{'📋 五平台已生成' if platform_ready else '📋 五平台未生成'}</span>"
+            )
+            # 主成片方向由实际 render 参数决定。2026-05 起新视频默认 1920x1080；
+            # 老视频还是 1080x1920，UI 需要如实标注，避免"pill 说 16:9 但播起来是
+            # 竖版"这种指鹿为马。
+            main_resolution = str(video.get("resolution") or "").lower()
+            main_orientation = str(video.get("orientation") or "").lower()
+            if main_orientation == "landscape" or main_resolution == "1920x1080":
+                main_is_landscape = True
+                main_format_label = "16:9 主成片"
+                main_preview_subtitle = "16:9 主成片（抖音 / B 站 / YouTube 通投）"
+                main_pill_html = "<span class='status-pill ok'>🖥️ 16:9 主成片</span>"
+            elif main_orientation == "portrait" or main_resolution == "1080x1920":
+                main_is_landscape = False
+                main_format_label = "9:16 旧主成片"
+                main_preview_subtitle = "9:16 主成片（老默认方向，未重渲）"
+                main_pill_html = "<span class='status-pill info'>📱 9:16 主成片（旧默认）</span>"
+            else:
+                main_is_landscape = False
+                fmt = main_resolution or main_orientation or "unknown"
+                main_format_label = fmt
+                main_preview_subtitle = fmt
+                main_pill_html = f"<span class='status-pill info'>🎬 {_escape(fmt)}</span>"
+            status_pills.append(main_pill_html)
+            # Draft / release tier — 让人一眼看到这个 mp4 是 540p 草稿还是 1080p 发布版。
+            # 老视频没记 quality_tier，缺省按 release 处理（其实可能是 release，反正
+            # 老的也不会进 draft 流程）。
+            quality_tier = str(video.get("quality_tier") or "release").lower()
+            if quality_tier == "draft":
+                status_pills.append(
+                    "<span class='status-pill warn'>🧪 草稿 (540p / ultrafast，仅供预览)</span>"
+                )
+            if has_portrait:
+                status_pills.append(
+                    "<span class='status-pill info'>📱 含 9:16 补切</span>"
+                )
+            status_row = "<div class='status-row'>" + "".join(status_pills) + "</div>"
+
+            # Pull the douyin hook (already cleaned by platform_publish.py) so
+            # reviewers see what the audience would see, not a raw content_id.
+            hook_text = ""
+            if isinstance(platform_package, dict):
+                douyin = (platform_package.get("platforms") or {}).get("douyin") or {}
+                hook_text = str(douyin.get("description") or "").strip()
+            hook_html = (
+                f"<div class='video-hook'><span class='hook-label'>抖音首屏简介</span>{_escape(hook_text)}</div>"
+                if hook_text
+                else ""
+            )
+
+            warning_html = (
+                f"<p class='warning'>⚠️ 阻断原因：{_escape(blocking_text)}</p>"
+                if blocking_text
+                else ""
+            )
+            # 80-94 中间档没有硬阻断，但要告诉你"要升到 95 还差什么"。
+            if (needs_review or not publish_ready) and gap_hints and not blocking_text:
+                gap_items = "".join(f"<li>{_escape(str(h))}</li>" for h in gap_hints)
+                warning_html += (
+                    "<div class='score-gap'>"
+                    "<strong>距 ≥95 自动发布还差：</strong>"
+                    f"<ul>{gap_items}</ul>"
+                    "</div>"
+                )
+
+            tech_pills = (
                 f"<span class='pill'>字幕: {_escape(video.get('subtitle_mode', '-'))}</span>"
                 f"<span class='pill'>模板: {_escape(video.get('template_id', '-'))}</span>"
                 f"<span class='pill'>视觉: {_escape(video.get('visual_quality', '-'))}</span>"
-                f"<span class='pill'>质量分: {_escape(video.get('video_quality_score', '-'))}</span>"
-                f"<span class='pill'>v6: {_escape(video.get('architecture_version', '-'))}</span>"
                 f"<span class='pill'>引擎: {_escape(video.get('render_engine_actual', '-'))}</span>"
+                f"<span class='pill'>架构: {_escape(video.get('architecture_version', '-'))}</span>"
                 f"<span class='pill'>Visual QC: {_escape(video.get('visual_qc_score', '-'))} / {_escape(video.get('visual_qc_pass', False))}</span>"
                 f"<span class='pill'>Remotion: {_escape(video.get('remotion_status', '-'))}</span>"
-                f"<span class='pill'>publish_ready: {_escape(publish_ready)}</span>"
                 f"<span class='pill'>翻译: {_escape(video.get('translation_mode', '-'))}</span>"
+                f"<span class='pill'>TTS: {_escape(tts_mode)}</span>"
                 f"<span class='pill'>审核: {_escape(video.get('publish_status', 'pending'))}</span>"
-                f"<span class='pill'>平台发布包: {_escape('已生成' if platform_ready else '未生成')}</span>"
-                "</p>"
-                f"<p class='warning'>{_escape('阻断原因：' + blocking_text) if blocking_text else ''}</p>"
-                f"<p class='muted'>{_escape('Remotion fallback：' + remotion_reason) if remotion_reason else ''}</p>"
-                "<div class='video-actions'>"
-                f"{source_link}"
-                f"<a href='/outputs/{_escape(content_id)}'>查看审核包</a>"
-                f"<a href='{video_url}'>打开视频文件</a>"
-                f"<a href='/artifact/{_escape(content_id)}/video_render_manifest.json'>生成参数</a>"
-                "<a href='/publish-board'>发布看板</a>"
-                f"{_platform_package_form(content_id, '/videos', '刷新发布包' if platform_ready else '生成发布包')}"
+            )
+            remotion_note = (
+                f"<p class='muted' style='margin:6px 0 0;'>Remotion fallback：{_escape(remotion_reason)}</p>"
+                if remotion_reason
+                else ""
+            )
+            tech_block = (
+                "<details class='video-tech'><summary>技术参数 / 调试信息</summary>"
+                "<div class='tech-grid'>"
+                f"<p>{tech_pills}</p>"
+                f"<p class='muted'>video_version=<code>{video_version}</code> · 生成时间：{generated_at}</p>"
+                f"<p class='muted'>资源目录：<code>{resource_dir}</code></p>"
+                f"{remotion_note}"
                 "</div>"
+                "</details>"
+            )
+
+            actions = []
+            actions.append(f"<a class='btn btn-primary' href='{video_url}'>🎬 打开 {main_format_label}</a>")
+            if has_portrait:
+                actions.append(f"<a class='btn btn-primary' href='{portrait_url}'>📱 打开 9:16 补切</a>")
+            actions.append(f"<a class='btn' href='/outputs/{_escape(content_id)}'>📦 审核包</a>")
+            if source_url:
+                actions.append(
+                    f"<a class='btn' href='{_escape(source_url)}' target='_blank' rel='noreferrer'>🌐 原始来源</a>"
+                )
+            actions.append(
+                f"<a class='btn btn-ghost' href='/artifact/{_escape(content_id)}/video_render_manifest.json'>生成参数</a>"
+            )
+            actions.append("<a class='btn btn-ghost' href='/publish-board'>发布看板</a>")
+            actions.append(_platform_package_form(content_id, "/videos", "刷新发布包" if platform_ready else "生成发布包"))
+            actions_html = "<div class='video-actions'>" + "".join(actions) + "</div>"
+
+            # 老数据 (1080x1920) 仍按 9:16 宽高比预览，避免拉伸变形。
+            main_preview_class = (
+                "video-preview video-preview-landscape"
+                if main_is_landscape
+                else "video-preview video-preview-portrait"
+            )
+            items.append(
+                "<div class='card video-card'>"
+                f"<div class='{main_preview_class}'>"
+                f"<div class='muted'>{_escape(main_preview_subtitle)}</div>"
+                f"<video class='video-player' controls preload='metadata' src='{video_url}'></video>"
+                "</div>"
+                f"{portrait_preview_html}"
+                "<div class='video-main'>"
+                f"<h2>{_escape(video.get('title', content_id))}</h2>"
+                f"<div class='video-meta-line'>"
+                f"<code>{_escape(content_id)}</code> · {_escape(video.get('source_type', '-'))} · {size_mb:.1f} MB · {duration}"
+                "</div>"
+                f"{status_row}"
+                f"{warning_html}"
+                f"{hook_html}"
+                f"{actions_html}"
+                f"{tech_block}"
+                "</div>"
+                # 五平台文案直接挂在 video-card 下，跨整张卡片宽度；这样能在
+                # 1080+ 屏幕上并排 3-4 个平台卡，把视频预览结束后的左下空白填满。
                 f"{platform_assets_html}"
-                "</div>"
                 "</div>"
             )
         body = f"""<div class="card">
@@ -1121,7 +1356,7 @@ class WebHandler(BaseHTTPRequestHandler):
         for filename in DISPLAY_ARTIFACTS:
             if (package_dir / filename).exists():
                 artifact_links.append(f"<a href='/artifact/{_escape(content_id)}/{_escape(filename)}'>{_escape(filename)}</a>")
-        image_report = _read_json(package_dir / "readme_images.json")
+        image_report = _read_json(stage_subdir(package_dir, "readme_images.json"))
         image_items = []
         images = image_report.get("images", [])
         if isinstance(images, list):
@@ -1134,11 +1369,11 @@ class WebHandler(BaseHTTPRequestHandler):
         images_html = f"<div class='card'><h2>README 图片素材</h2><ul>{''.join(image_items)}</ul></div>" if image_items else ""
         publish_review_html = _publish_review_html(package_dir, content_id)
         platform_publish_html = _platform_publish_html(package_dir, content_id)
-        render_manifest = _read_json(package_dir / "video_render_manifest.json")
+        render_manifest = _read_json(stage_subdir(package_dir, "video_render_manifest.json"))
         render_parameters = render_manifest.get("render_parameters", {}) if isinstance(render_manifest.get("render_parameters"), dict) else {}
-        video_quality_report = _read_json(package_dir / "video_quality_report.json")
-        visual_qc_report = _read_json(package_dir / "visual_qc_report.json")
-        remotion_status = _read_json(package_dir / "remotion_status.json")
+        video_quality_report = _read_json(stage_subdir(package_dir, "video_quality_report.json"))
+        visual_qc_report = _read_json(stage_subdir(package_dir, "visual_qc_report.json"))
+        remotion_status = _read_json(stage_subdir(package_dir, "remotion_status.json"))
         quality_html = ""
         if video_quality_report:
             blocking_reasons = video_quality_report.get("blocking_reasons", [])
@@ -1208,14 +1443,17 @@ class WebHandler(BaseHTTPRequestHandler):
   <p><a href="/artifact/{_escape(content_id)}/render_manifest.v6.json">打开 render_manifest.v6.json</a> · <a href="/artifact/{_escape(content_id)}/visual_qc_report.json">打开 visual_qc_report.json</a> · <a href="/artifact/{_escape(content_id)}/remotion_status.json">打开 remotion_status.json</a></p>
 </div>"""
         video_html = ""
-        if (package_dir / "final_video.mp4").exists():
-            video_version = str(render_manifest.get("video_version") or (package_dir / "final_video.mp4").stat().st_mtime_ns)
+        if (stage_subdir(package_dir, "final_video.mp4")).exists():
+            video_version = str(render_manifest.get("video_version") or (stage_subdir(package_dir, "final_video.mp4")).stat().st_mtime_ns)
             video_url = f"/artifact/{_escape(content_id)}/final_video.mp4?v={_escape(video_version)}"
             video_html = f"""<div class="card video-card">
   <h2>成片预览</h2>
   <video class="video-player" controls preload="metadata" src="{video_url}"></video>
   <p><a href="{video_url}">打开视频文件</a> · <a href="/videos">返回成片库</a></p>
 </div>"""
+        browser_agent_status = _read_json(stage_subdir(package_dir, "browser_agent_status.json"))
+        browser_agent_report = _read_json(stage_subdir(package_dir, "browser_agent_report.json"))
+        browser_agent_html = _browser_agent_html(content_id, browser_agent_status, browser_agent_report)
         body = f"""<div class="card">
   <h1>{_escape(content_id)}</h1>
   {_summary_html(package_dir)}
@@ -1229,6 +1467,7 @@ class WebHandler(BaseHTTPRequestHandler):
 {manifest_html}
 {v6_html}
 {quality_html}
+{browser_agent_html}
 {publish_review_html}
 {platform_publish_html}
 <div class="card">
@@ -1317,6 +1556,30 @@ class WebHandler(BaseHTTPRequestHandler):
         exit_code = run_pipeline(build_parser().parse_args(args))
         if exit_code != 0:
             raise RuntimeError(f"Video render exited with code {exit_code}")
+        self._redirect(f"/outputs/{content_id}")
+
+    def _browser_agent_report(self, form: dict[str, list[str]]) -> None:
+        content_id = _form_value(form, "content_id")
+        task = _form_value(form, "browser_agent_task", "source_page_research")
+        if not CONTENT_ID_RE.fullmatch(content_id):
+            raise ValueError("Invalid content id")
+        args = [
+            "--browser-agent-report",
+            content_id,
+            "--browser-agent-task",
+            task,
+            "--output-dir",
+            str(self.server.output_dir),
+            "--workspace-dir",
+            str(self.server.workspace_dir),
+            "--browser-agent-max-steps",
+            "10",
+        ]
+        if "mock" in form:
+            args.append("--mock")
+        exit_code = run_pipeline(build_parser().parse_args(args))
+        if exit_code != 0:
+            raise RuntimeError(f"Browser agent report exited with code {exit_code}")
         self._redirect(f"/outputs/{content_id}")
 
     def _publish_review(self, form: dict[str, list[str]]) -> None:
@@ -1859,11 +2122,54 @@ def _select_option(value: str, label: str, selected_value: str) -> str:
     return f"<option value='{_escape(value)}'{selected}>{_escape(label)}</option>"
 
 
+def _browser_agent_html(content_id: str, status: dict[str, Any], report: dict[str, Any]) -> str:
+    task_options = "".join(_select_option(task_id, task_id, "source_page_research") for task_id in sorted(BROWSER_AGENT_TASKS))
+    status_cards = [
+        ("status", status.get("status", "-")),
+        ("browser_use_available", status.get("browser_use_available", "-")),
+        ("active_capture_layer", status.get("active_capture_layer", "playwright")),
+        ("optional_agent_layer", status.get("optional_agent_layer", "browser-use")),
+        ("agent_llm_provider", status.get("agent_llm_provider", "-")),
+        ("agent_llm_model", status.get("agent_llm_model", "-")),
+        ("screenshot_count", status.get("screenshot_count", "-")),
+    ]
+    if report:
+        status_cards.extend(
+            [
+                ("last_report_status", report.get("status", "-")),
+                ("last_report_task", report.get("task_id", "-")),
+            ]
+        )
+    cards = "".join(f"<div class='item'><div class='muted'>{_escape(k)}</div><strong>{_escape(v)}</strong></div>" for k, v in status_cards)
+    blocking = status.get("blocking_reasons", []) if isinstance(status.get("blocking_reasons"), list) else []
+    blocking_html = "".join(f"<li>{_escape(reason)}</li>" for reason in blocking) or "<li>无</li>"
+    report_link = (
+        f"<p><a href='/artifact/{_escape(content_id)}/browser_agent_report.json'>打开 browser_agent_report.json</a></p>"
+        if report
+        else ""
+    )
+    return f"""<div class="card">
+  <h2>浏览器研究助手</h2>
+  <p class="muted">browser-use 是可选智能代理层，不替代 Chromium/Playwright；默认 mock 只生成计划和状态，不打开浏览器。</p>
+  <div class="grid">{cards}</div>
+  <h3>阻塞原因</h3>
+  <ul>{blocking_html}</ul>
+  <form method="post" action="/browser-agent-report">
+    <input type="hidden" name="content_id" value="{_escape(content_id)}">
+    <label>任务</label>
+    <select name="browser_agent_task">{task_options}</select>
+    <label><input type="checkbox" name="mock" checked> mock 模式：只生成计划，不打开浏览器</label>
+    <button type="submit">生成浏览器研究报告</button>
+  </form>
+  {report_link}
+</div>"""
+
+
 def _publish_review_html(package_dir: Path, content_id: str) -> str:
-    analysis = _read_json(package_dir / "analysis.json")
-    transcript = _read_json(package_dir / "youtube_transcript.json")
-    risk = _read_json(package_dir / "risk_report.json")
-    quality = _read_json(package_dir / "quality_check.json")
+    analysis = _read_json(stage_subdir(package_dir, "analysis.json"))
+    transcript = _read_json(stage_subdir(package_dir, "youtube_transcript.json"))
+    risk = _read_json(stage_subdir(package_dir, "risk_report.json"))
+    quality = _read_json(stage_subdir(package_dir, "quality_check.json"))
     review = load_publish_review(package_dir)
 
     analysis_transcript = analysis.get("transcript_status") if isinstance(analysis.get("transcript_status"), dict) else {}
@@ -1921,7 +2227,7 @@ def _publish_review_html(package_dir: Path, content_id: str) -> str:
 
 
 def _platform_publish_html(package_dir: Path, content_id: str) -> str:
-    package = _read_json(package_dir / "platform_publish_package.json")
+    package = _read_json(stage_subdir(package_dir, "platform_publish_package.json"))
     if not package:
         return f"""<div class="card">
   <h2>多平台发布包</h2>
@@ -1944,23 +2250,43 @@ def _platform_assets_grid(package: dict[str, Any]) -> str:
         asset = platforms.get(platform)
         if not isinstance(asset, dict):
             continue
-        notes = asset.get("publish_notes", [])
-        risks = asset.get("manual_review_risks", [])
-        notes_html = "".join(f"<li>{_escape(item)}</li>" for item in notes if str(item).strip())
-        risks_html = "".join(f"<li>{_escape(item)}</li>" for item in risks if str(item).strip())
+        notes = [str(item).strip() for item in asset.get("publish_notes", []) if str(item).strip()]
+        risks = [str(item).strip() for item in asset.get("manual_review_risks", []) if str(item).strip()]
+        notes_html = "".join(f"<li>{_escape(item)}</li>" for item in notes)
+        risks_html = "".join(f"<li>{_escape(item)}</li>" for item in risks)
+        suitable = bool(asset.get("suitable"))
+        suitable_badge = (
+            "<span class='status-pill ok' style='font-size:11px;padding:2px 8px;'>✓ 适配</span>"
+            if suitable
+            else "<span class='status-pill warn' style='font-size:11px;padding:2px 8px;'>⚠ 滞后</span>"
+        )
+        cover_text = _escape(asset.get("cover_text", ""))
+        meta_line_parts = []
+        if asset.get("content_fit"):
+            meta_line_parts.append(_escape(asset["content_fit"]))
+        if asset.get("video_length"):
+            meta_line_parts.append(f"长度 {_escape(asset['video_length'])}")
+        if asset.get("focus"):
+            meta_line_parts.append(f"重点 {_escape(asset['focus'])}")
+        meta_line = " · ".join(meta_line_parts)
+        # 主体：复制框 + 封面文案。其他元数据（platform notes / 风险）折叠
+        # 在 details 里，避免每张卡片都甩 10 行 li 抢复制框的视觉重心。
+        details_blocks = []
+        if notes_html:
+            details_blocks.append(f"<details><summary class='muted'>发布注意事项 ({len(notes)})</summary><ul>{notes_html}</ul></details>")
+        if risks_html:
+            details_blocks.append(f"<details><summary class='muted'>需要人工确认 ({len(risks)})</summary><ul>{risks_html}</ul></details>")
         cards.append(
             f"""<div class="item platform-card">
-  <h3>{_escape(asset.get("platform_name", platform))}</h3>
-  <p><span class="pill">suitable: {_escape(asset.get("suitable"))}</span></p>
-  <p><span class="pill">适合: {_escape(asset.get("content_fit", ""))}</span><span class="pill">长度: {_escape(asset.get("video_length", ""))}</span><span class="pill">重点: {_escape(asset.get("focus", ""))}</span></p>
-  <p class="muted">{_escape(asset.get("suitability_reason", ""))}</p>
+  <div class="platform-card-head">
+    <h3>{_escape(asset.get("platform_name", platform))}</h3>
+    {suitable_badge}
+  </div>
+  {f'<p class="muted platform-meta">{meta_line}</p>' if meta_line else ''}
   <label>可复制发布文案</label>
-  <textarea readonly>{_escape(asset.get("copy_block", ""))}</textarea>
-  <p><strong>封面文案：</strong>{_escape(asset.get("cover_text", ""))}</p>
-  <h4>发布注意事项</h4>
-  <ul>{notes_html}</ul>
-  <h4>需要人工确认的风险点</h4>
-  <ul>{risks_html}</ul>
+  <textarea readonly onclick="this.select()">{_escape(asset.get("copy_block", ""))}</textarea>
+  {f'<p class="platform-cover"><strong>封面文案：</strong>{cover_text}</p>' if cover_text else ''}
+  {''.join(details_blocks)}
 </div>"""
         )
     return f"<div class=\"platform-grid\">{''.join(cards)}</div>"

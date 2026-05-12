@@ -499,7 +499,20 @@ def _mock_youtube_candidates(source: dict[str, Any]) -> list[dict[str, Any]]:
                 "views": 125000,
                 "likes": 5200,
                 "comments": 420,
-                "description": "Mock English YouTube video for offline source discovery validation.",
+                # Description carries chapter timestamps so this candidate
+                # passes the visual_capacity floor (≥4 distinct surfaces).
+                # That floor was added to keep 60-min single-shot
+                # talking-head videos out of the auto pipeline; without
+                # at least chapter cues we can't claim diverse evidence.
+                "duration": 480,
+                "description": (
+                    "Mock English YouTube video for offline source discovery validation.\n"
+                    "(00:00) Intro\n"
+                    "(01:30) Setup\n"
+                    "(03:20) Demo workflow\n"
+                    "(05:00) Result\n"
+                    "(07:00) Wrap-up"
+                ),
                 "keywords": _youtube_signal_keywords(source, "AI workflow demo", query),
             },
         )

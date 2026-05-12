@@ -7,7 +7,7 @@ import pytest
 
 from app.artifact_writer import ArtifactWriter
 from app.main import main
-from app.media_producer import build_bilingual_ass, build_bilingual_srt, build_caption_segments, build_director_zh_ass, build_srt, build_video_quality_report, extract_title_text, extract_voiceover_text, render_video_package, resolve_ffmpeg, select_visual_asset, split_sentences
+from app.media_producer import build_bilingual_ass, build_bilingual_srt, build_caption_segments, build_director_zh_ass, build_srt, build_video_quality_report, collect_visual_evidence_items, extract_title_text, extract_voiceover_text, render_video_package, resolve_ffmpeg, select_visual_asset, split_sentences
 
 
 SCRIPT = """# 标题
@@ -161,6 +161,45 @@ def test_select_visual_asset_prefers_github_screenshot(tmp_path: Path) -> None:
     assert select_visual_asset(writer) == screenshot
 
 
+def test_select_visual_asset_prefers_browser_agent_asset(tmp_path: Path) -> None:
+    writer = ArtifactWriter(tmp_path / "output", tmp_path / "workspace", "demo")
+    browser_asset = writer.workspace_path("browser_agent_assets/source.png")
+    screenshot = writer.workspace_path("snapshots/github_repo_home.png")
+    browser_asset.parent.mkdir(parents=True)
+    screenshot.parent.mkdir(parents=True)
+    browser_asset.write_bytes(b"browser-image")
+    screenshot.write_bytes(b"snapshot-image")
+    writer.write_json("browser_agent_assets.json", {"assets": [{"workspace_path": str(browser_asset)}]})
+    writer.write_json("snapshot_status.json", {"screenshots": [{"workspace_path": str(screenshot)}]})
+
+    assert select_visual_asset(writer) == browser_asset
+
+
+def test_collect_visual_evidence_items_keeps_browser_sequence_first(tmp_path: Path) -> None:
+    writer = ArtifactWriter(tmp_path / "output", tmp_path / "workspace", "demo")
+    browser_one = writer.workspace_path("browser_agent_assets/source.png")
+    browser_two = writer.workspace_path("browser_agent_assets/docs.png")
+    snapshot = writer.workspace_path("snapshots/github_repo_home.png")
+    for path in (browser_one, browser_two, snapshot):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"image")
+    writer.write_json(
+        "browser_agent_assets.json",
+        {
+            "assets": [
+                {"workspace_path": str(browser_one), "label": "Source", "role": "browser_source_screenshot"},
+                {"workspace_path": str(browser_two), "label": "Docs", "role": "browser_docs_screenshot"},
+            ]
+        },
+    )
+    writer.write_json("snapshot_status.json", {"screenshots": [{"workspace_path": str(snapshot), "label": "Repo"}]})
+
+    items = collect_visual_evidence_items(writer)
+
+    assert [item["label"] for item in items[:3]] == ["Source", "Docs", "Repo"]
+    assert [item["role"] for item in items[:2]] == ["browser_source_screenshot", "browser_docs_screenshot"]
+
+
 def test_video_quality_report_blocks_offline_voice_and_low_asset_diversity() -> None:
     report = build_video_quality_report(
         director_plan={
@@ -210,6 +249,8 @@ def test_offline_render_generates_final_video(tmp_path: Path) -> None:
     assert writer.output_path("render_manifest.v6.json").exists()
     assert writer.output_path("remotion_status.json").exists()
     assert writer.output_path("visual_qc_report.json").exists()
+    assert writer.output_path("video_self_review.json").exists()
+    assert writer.output_path("skill_registry.json").exists()
     assert writer.output_path("director_plan.json").exists()
     assert writer.output_path("shot_list.json").exists()
     assert writer.output_path("edit_decisions.json").exists()
@@ -227,6 +268,8 @@ def test_offline_render_generates_final_video(tmp_path: Path) -> None:
     audio_mastering_status = json.loads(writer.output_path("audio_mastering_status.json").read_text(encoding="utf-8"))
     remotion_status = json.loads(writer.output_path("remotion_status.json").read_text(encoding="utf-8"))
     visual_qc_report = json.loads(writer.output_path("visual_qc_report.json").read_text(encoding="utf-8"))
+    video_self_review = json.loads(writer.output_path("video_self_review.json").read_text(encoding="utf-8"))
+    skill_registry = json.loads(writer.output_path("skill_registry.json").read_text(encoding="utf-8"))
     media_job = json.loads(writer.output_path("media_job.json").read_text(encoding="utf-8"))
     brand_template = json.loads(writer.output_path("brand_template.json").read_text(encoding="utf-8"))
     assert translation_status["mode"] == "mock_placeholder"
@@ -251,9 +294,13 @@ def test_offline_render_generates_final_video(tmp_path: Path) -> None:
     assert render_manifest_v6["platform"] == "douyin"
     assert render_manifest_v6["composition"] == "DouyinExplainer"
     assert render_manifest_v6["fallback_engine"] == "ffmpeg"
+    assert render_manifest_v6["outputs"]["video_self_review_path"].endswith("video_self_review.json")
+    assert render_manifest_v6["outputs"]["skill_registry_path"].endswith("skill_registry.json")
     assert remotion_status["preferred_engine"] == "remotion"
     assert remotion_status["render_engine_actual"] in {"remotion", "ffmpeg"}
     assert visual_qc_report["metrics"]["shot_count"] >= 10
+    assert video_self_review["checks"]["shot_count"] >= 10
+    assert any(skill["skill_id"] == "remotion-shotlist-renderer" and skill["used_in_current_run"] for skill in skill_registry["skills"])
     assert video_quality_report["publish_ready"] is False
     assert video_quality_report["voice_quality_score"] < 50
     assert media_job["render_manifest_path"].endswith("video_render_manifest.json")

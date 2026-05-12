@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "source": {
+    "file": "douyin_ref_01.mp4",
+    "origin": "Douyin (user screen recording)",
+    "captured_at": "2026-05-03",
+    "topic": "AI video prompt engineering / 5D prompt method",
+    "creator_archetype": "AI tools tutorial / 科普搬运型"
+  },
+  "technical": {
+    "duration_s": 173.47,
+    "container": "mp4",
+    "video": {
+      "codec": "h264",
+      "width": 848,
+      "height": 384,
+      "aspect_ratio": "21:9 (横屏)",
+      "fps": 30,
+      "bitrate_kbps": 453,
+      "note": "横屏视频直接搬到抖音，不是原生竖屏。说明博主走横屏-高级感策略。"
+    },
+    "audio": {
+      "codec": "aac",
+      "channels": 2,
+      "sample_rate": 44100,
+      "integrated_lufs": -14.5,
+      "lra": 1.5,
+      "true_peak_dbfs": -0.3,
+      "silence_segments_over_500ms": 0,
+      "note": "整片响度=-14.5 LUFS（抖音/YouTube 投放标准），动态范围只有 1.5 LU 说明压缩到工业级，BGM 全程不断。"
+    },
+    "editing": {
+      "max_scene_score": 0.0415,
+      "hard_cut_threshold_0_4_count": 0,
+      "transition_style": "全程渐变/淡入淡出，无硬切。镜头平均切换间隔 6-8s。",
+      "rhythm": "中等偏慢（科普节奏，非高强度短视频）"
+    }
+  },
+  "visual_system": {
+    "background": {
+      "base_color": "#0A1428",
+      "secondary_color": "#0E1B33",
+      "texture": "细网格 + 左上角持续滚动的二进制/代码流",
+      "ambience": "全程暗色 + 轻微 vignette + 低强度颗粒",
+      "purpose": "营造科技/数据感，让前景文字与图像在暗背景上更突出"
+    },
+    "color_palette": {
+      "primary_accent": "#F5D547 (黄)",
+      "secondary_accent": "#3FE8B0 (青绿)",
+      "warning_accent": "#E84A4A (红)",
+      "neutral_text": "#E8EDF5 (浅灰白)",
+      "muted_text": "#7B8A9E (灰)",
+      "rules": [
+        "中文标题用 黄/绿 渐变或交替",
+        "对比/错误案例用 红色边框 + 红色 ERROR/MINE 标识",
+        "数据可视化（雷达、对比）用 绿色描边",
+        "正文字幕始终是浅灰白居中"
+      ]
+    },
+    "typography": {
+      "title_size_ratio": "约画面高度的 18-22%",
+      "subtitle_size_ratio": "约画面高度的 7-9%",
+      "english_label_size_ratio": "约画面高度的 4-5%",
+      "title_font": "粗黑体 (Source Han Sans Heavy / 思源黑体 Heavy)",
+      "english_label_font": "细字母全大写带间距 (eg. 'CORE METHOD', 'SCIENTIFIC METHOD')",
+      "alignment": "居中"
+    },
+    "layout": {
+      "active_area": "画面中央 60-70%，左右各 15-20% 留出暗黑负空间",
+      "content_zones": {
+        "top_band_0_15": "板块标识（英文小字 ALL CAPS）",
+        "middle_zone_15_75": "主视觉（标题/截图/数据图）",
+        "bottom_band_75_100": "字幕（一句话台词）"
+      }
+    }
+  },
+  "shot_templates": [
+    {
+      "id": "chapter_title_card",
+      "purpose": "章节切入 / 概念引入",
+      "structure": "英文小字板块名 + 中文大字标题（黄/绿）+ 一句台词字幕",
+      "examples_in_video": ["科学生成方法 (1s)", "注意力机制 (64s)", "交叉注意力权重 (88s)"],
+      "我们已有": "ImpactTitleShot / KeywordPunchShot",
+      "差距": "缺英文板块名层、缺背景代码流、缺呼吸动画"
+    },
+    {
+      "id": "centered_image_with_caption",
+      "purpose": "概念类比 / 真实素材展示",
+      "structure": "中央矩形图（约 50% 宽度）+ 图上方板块名 + 图下方进度/标签 + 字幕",
+      "examples_in_video": ["公主油画 + 技术原理 (16s)", "拿破仑加冕 + 5D PROMPT SCAN (152s)"],
+      "我们已有": "RepoFullBleedShot（但是全屏铺满）",
+      "差距": "我们目前是全屏铺满，参考视频是中央留框 + 多层标签。两种风格各有用途，不必硬抄。"
+    },
+    {
+      "id": "formula_card",
+      "purpose": "把复杂概念压缩为一句 slogan",
+      "structure": "中央粗大公式（A = B 或 A ≠ B）+ 装饰性周边元素 + 字幕",
+      "examples_in_video": ["提示词 = 刻刀 (24s)", "万能模板 ≠ 加冕视频 (96s)"],
+      "我们已有": "无",
+      "差距": "缺这个模板，但很容易加，靠 KeywordPunchShot 改造即可"
+    },
+    {
+      "id": "error_alert_card",
+      "purpose": "强调错误/坑点",
+      "structure": "红色边框弹窗 + 'ERROR' / 'MINE #N' 标签 + 内容 + 字幕",
+      "examples_in_video": ["特征污染 ERROR (72s)", "MINE #1 垫图信息熵 (136s)"],
+      "我们已有": "无",
+      "差距": "完全缺失。这是脚本里 risk/坑点段最该用的模板"
+    },
+    {
+      "id": "data_radar_or_chart",
+      "purpose": "结构化展示多维度信息",
+      "structure": "雷达图 / 配方表 / 5x5 矩阵 + 顶部标题 + 字幕",
+      "examples_in_video": ["五维控制坐标系雷达 (112s)", "PROMPT 配方表 (40s)"],
+      "我们已有": "无",
+      "差距": "极大。需要新模板 DataChartShot，但工程复杂度中等（SVG/Recharts 即可）"
+    },
+    {
+      "id": "tool_logo_strip",
+      "purpose": "推荐工具/软件",
+      "structure": "中央截图 + 下方多个软件 logo + 名称 + 字幕",
+      "examples_in_video": ["Topaz video + Topaz photo (144s)"],
+      "我们已有": "无（但和 ReadmeVisualCardShot 风格相近）",
+      "差距": "中等，可以从 ReadmeVisualCardShot 改造"
+    },
+    {
+      "id": "icon_radial_emphasis",
+      "purpose": "用数字/图标强调单一要素",
+      "structure": "中央对象 + 周围环形分布的小图标 + 大数字（x10 / x100）+ 字幕",
+      "examples_in_video": ["x10 围圈 (24s)"],
+      "我们已有": "无",
+      "差距": "中等，纯 CSS 即可实现"
+    }
+  ],
+  "transitions": {
+    "primary": "cross-dissolve (淡入淡出 0.4-0.8s)",
+    "secondary": "slow zoom (0.95→1.05) + opacity",
+    "rules": [
+      "禁用硬切",
+      "镜头切换时背景保持不变（代码流持续滚动），只换前景",
+      "所有静止元素都加 0.3s 呼吸/漂浮"
+    ]
+  },
+  "audio_recipe": {
+    "bgm": "全程不断的电子/科技氛围 BGM，混音压在 -22 LUFS 左右",
+    "vo": "干净人声（很可能是 TTS）压到 -14 LUFS 左右",
+    "loudness_target": "-14 LUFS integrated, peak -0.3 dBFS",
+    "side_chain": "BGM 在人声出现时被自动压低 4-6 dB"
+  },
+  "我们当前差距评估": {
+    "视觉系统": "60% 差距（缺背景代码流、缺英文板块名、缺第三色红色警示）",
+    "镜头模板多样性": "70% 差距（缺 4-5 套关键模板）",
+    "镜头转场": "90% 差距（我们目前几乎没转场动画）",
+    "运动/呼吸": "85% 差距（背景静止、前景静止）",
+    "数据可视化": "100% 差距（无）",
+    "音频系统": "100% 差距（无 BGM、无 TTS、无响度规范）"
+  },
+  "建议补丁优先级": [
+    {"P": 0, "task": "加 BGM + 真人声 TTS + 响度规范化（半天）", "影响": "立刻带来 30-40 分提升"},
+    {"P": 0, "task": "改硬切→渐变转场（半天）", "影响": "立刻带来高级感"},
+    {"P": 1, "task": "背景加滚动代码流 + 网格（1 天）", "影响": "整体视觉感升级"},
+    {"P": 1, "task": "加英文板块名层（CORE METHOD/MINE #1/CAUTION）（半天）", "影响": "信息密度+层次感"},
+    {"P": 2, "task": "新增 FormulaShot / ErrorAlertShot（1-2 天）", "影响": "脚本可用模板从 5 套→7 套"},
+    {"P": 2, "task": "前景元素加呼吸/漂浮（半天）", "影响": "去掉 PPT 感"},
+    {"P": 3, "task": "DataChartShot（雷达/配方表）（2-3 天）", "影响": "对脚本/选题有要求，先不做"}
+  ]
+}

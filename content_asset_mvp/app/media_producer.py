@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -12,13 +13,45 @@ from pathlib import Path
 from typing import Any
 
 from .audio_mastering import master_voice_audio
-from .artifact_writer import ArtifactWriter
+from .artifact_writer import ArtifactWriter, stage_subdir
+from .llm_client import LLMClient
+from .pipeline_cache import StageCache
 from .remotion_renderer import probe_remotion_renderer, render_remotion_video
 from .render_manifest import build_v6_render_manifest
+from .bgm_mixer import mix_bgm, write_bgm_status
+from .skill_registry import build_skill_registry_report
 from .subtitle_engine import build_subtitle_plan
 from .tts_engine import synthesize_narration
 from .video_director import assign_scene_timing, build_director_plan, write_director_artifacts
+from .video_self_review import run_video_self_review
 from .visual_qc import run_visual_qc
+
+
+def _read_github_repo_name(meta_path: Path) -> str | None:
+    """Return ``owner/repo`` (or ``owner``-only fallback) from github_meta.json.
+
+    Returns ``None`` if the file is missing, malformed, or doesn't carry an
+    obvious repo identifier — non-GitHub sources keep the existing behaviour
+    where Remotion shows the fallback brand title.
+    """
+    try:
+        if not meta_path.is_file():
+            return None
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if not isinstance(data, dict):
+        return None
+    full = data.get("full_name")
+    if isinstance(full, str) and "/" in full:
+        return full
+    owner = data.get("owner")
+    repo = data.get("repo")
+    if isinstance(owner, str) and isinstance(repo, str) and owner and repo:
+        return f"{owner}/{repo}"
+    if isinstance(repo, str) and repo:
+        return repo
+    return None
 
 
 SCRIPT_HEADING_RE = re.compile(r"^#\s+口播稿\s*$", re.MULTILINE)
@@ -97,9 +130,24 @@ def render_video_package(
     writer: ArtifactWriter,
     *,
     openai_api_key: str | None = None,
+    qwen_api_key: str | None = None,
+    volc_appid: str | None = None,
+    volc_access_token: str | None = None,
     force_mock: bool = False,
     bilingual_subtitles: bool = True,
+    # ``final_video.mp4`` 默认就是 16:9 (1920x1080) 主成片。
+    # 置 ``render_portrait=True`` 时额外渲一份 9:16 到 ``final_video_portrait.mp4``。
+    # ``render_landscape`` 保留只是为了不破坏老调用方——它已经是默认行为，传 False
+    # 也不会真关掉 landscape 主渲染。
+    render_portrait: bool = False,
+    render_landscape: bool = True,  # noqa: ARG001  (kept for backward compat)
+    quality_tier: str = "release",
+    use_cache: bool = True,
 ) -> RenderResult:
+    if quality_tier not in {"draft", "release"}:
+        raise ValueError(
+            f"quality_tier must be 'draft' or 'release', got {quality_tier!r}"
+        )
     script_path = writer.output_path("chinese_script.md")
     if not script_path.exists():
         raise FileNotFoundError(f"chinese_script.md not found for content_id={content_id}")
@@ -110,30 +158,321 @@ def render_video_package(
     director_plan = build_director_plan(content_id, script_path.read_text(encoding="utf-8"), writer)
     script_text = director_plan.voiceover
 
+    # Pull repoName off github_meta (if present) so the Remotion chrome title
+    # bar shows ``github.com/owner/repo`` instead of the fallback brand string.
+    repo_name = _read_github_repo_name(writer.output_path("github_meta.json"))
+
     ffmpeg = resolve_ffmpeg(writer)
-    voice_path, tts_status = synthesize_narration(
-        script_text,
-        writer.output_path("voice.wav"),
-        ffmpeg=ffmpeg,
-        openai_api_key=openai_api_key,
-        force_mock=force_mock,
-    )
+
+    # Ensure all stage subdirs exist *before* any provider tries to write
+    # into them. ``writer.output_path('voice.wav')`` resolves the staged
+    # path but does NOT create the parent dir — so if this is a fresh
+    # content_id (no prior pipeline run), the ``04_audio/`` etc. dirs
+    # don't exist yet, and ``Path.write_bytes()`` from doubao /
+    # dashscope / openai providers will silently fail with
+    # FileNotFoundError → all caught → fall back to silent → silent's
+    # ffmpeg call also fails because dir is missing → pipeline crashes.
+    # Pre-creating each stage dir avoids this whole class of bug.
+    for stage_name in ("04_audio", "05_subtitle", "06_render_props", "07_render_output", "08_qc"):
+        (writer.output_dir / stage_name).mkdir(parents=True, exist_ok=True)
+
+    # Incremental pipeline cache.
+    #
+    # We hash the upstream-deterministic inputs (script text, audio file
+    # content, etc.) and cache the *status* + filesystem outputs of four
+    # expensive stages: TTS, audio mastering, word-level alignment, and
+    # subtitle translation. A cold render still does all the work; a
+    # warm rerun on unchanged inputs hits and skips ~5+ minutes of
+    # provider/GPU time.
+    #
+    # Note: we re-emit the ``*_status.json`` artifacts on every call (cache
+    # hit or not), so downstream readers and the web console always see
+    # fresh per-run files even when the underlying work was reused.
+    cache = StageCache(writer.output_dir, enabled=use_cache)
+
+    # === Stage: TTS ===
+    #
+    # ``synthesize_narration`` writes to either ``voice.wav`` (silent
+    # fallback) or ``voice.mp3`` (cloud providers like doubao/dashscope/
+    # openai). We can't pin ``outputs=['voice.wav']`` upfront — that
+    # would let a silent ``voice.wav`` left over from an earlier run
+    # falsely satisfy the cache check while the actual real-voice
+    # ``voice.mp3`` is what downstream consumers want. So:
+    #
+    #   * ``outputs=`` is recorded *after* synthesis using the real
+    #     filename returned by the engine.
+    #   * On hit, we recover the path from ``status['voice_path']``
+    #     instead of guessing.
+    #   * ``expected_outputs=[]`` lets ``StageCache.lookup`` validate
+    #     against whatever the previous run actually stored.
+    voice_target = writer.output_path("voice.wav")
+    # SSML toggle is part of the TTS contract: when on we send
+    # ``<speak><break .../></speak>`` to Doubao to push per-track LRA
+    # ≥ 6 LU. Bake the flag into the cache key so toggling
+    # ``CONTENT_ASSET_TTS_SSML`` invalidates stale plain-text caches.
+    ssml_enabled = os.getenv("CONTENT_ASSET_TTS_SSML", "1").strip() != "0"
+    tts_inputs = {
+        "text": script_text,
+        # Encode *which* provider is reachable into the key so that
+        # adding/removing keys triggers a refresh (e.g. previously we
+        # fell back to silence; now OPENAI_API_KEY is present and we
+        # should re-synthesize).
+        "force_mock": bool(force_mock),
+        "has_openai": bool(openai_api_key),
+        "has_qwen": bool(qwen_api_key),
+        "has_volc": bool(volc_appid and volc_access_token),
+        "ssml_v1": ssml_enabled,
+        # Bumped when we rerouted Doubao to V3 + uranus voice with
+        # ``X-Api-Resource-Id: seed-tts-2.0`` and dropped SSML for the V3
+        # path in favour of ``additions.context_texts``. Old caches were
+        # built against V1 + ``M392_wvae_bigtts`` and must not be reused.
+        "tts_routing_v2": True,
+        # Provider preference + persona hint contribute to delivery
+        # signature — when we switch primary from CosyVoice 2 (longcheng_v2)
+        # back to Doubao Uranus (liufei) with a 讲述者 context_texts hint,
+        # cached audio from the prior run is wrong-timbre and must be
+        # invalidated. Capture both inputs so future toggles also
+        # invalidate cleanly.
+        "tts_persona_v2": True,
+        "tts_provider_pref": (os.getenv("CONTENT_ASSET_TTS_PROVIDER") or "auto").lower(),
+        "tts_doubao_context": (os.getenv("CONTENT_ASSET_TTS_DOUBAO_CONTEXT") or "")[:64],
+        # Voice override (VOLC_TTS_VOICE / CONTENT_ASSET_TTS_VOICE) must
+        # invalidate the cache — same script + same provider + different
+        # voice = different audio. Without this key, switching liufei →
+        # shuangkuaisi silently re-uses the male audio.
+        "tts_voice_override": (
+            os.getenv("VOLC_TTS_VOICE")
+            or os.getenv("CONTENT_ASSET_TTS_VOICE")
+            or ""
+        ),
+        # MiniMax 接入 — voice_id + model 一变就要重新合成。HAS_MINIMAX
+        # 单独 surface 一下,避免新增 MINIMAX_API_KEY 后 cache 还命中旧
+        # Doubao 音频。
+        "has_minimax": bool(os.getenv("MINIMAX_API_KEY")),
+        "minimax_voice": os.getenv("MINIMAX_VOICE_ID") or "",
+        "minimax_model": os.getenv("MINIMAX_MODEL") or "speech-02-hd",
+        "minimax_volume": os.getenv("MINIMAX_VOLUME") or "0.80",
+        # GPT-SoVITS local zero-shot — cache must invalidate when any of
+        # api_url / ref_audio path / prompt_text change because the model
+        # produces different audio for the same script text with different
+        # speaker conditioning.
+        "has_gptsovits": bool(os.getenv("GPTSOVITS_API_URL")),
+        "gptsovits_ref": os.getenv("GPTSOVITS_REF_AUDIO") or "",
+        "gptsovits_prompt": (os.getenv("GPTSOVITS_PROMPT_TEXT") or "")[:64],
+    }
+    tts_key = cache.key("tts", inputs=tts_inputs)
+    tts_hit = cache.lookup("tts", tts_key, expected_outputs=[])
+    voice_path: Path | None = None
+    tts_status: dict[str, Any] = {}
+    if tts_hit is not None:
+        cached_voice = Path(str(tts_hit.status.get("voice_path") or ""))
+        # Don't trust the absolute path verbatim if the artifact got
+        # archived/moved between runs — re-resolve through stage_subdir
+        # using just the filename. This survives moving the output dir.
+        if cached_voice.name:
+            cached_voice = stage_subdir(writer.output_dir, cached_voice.name)
+        if cached_voice.exists() and cached_voice.stat().st_size > 0:
+            voice_path = cached_voice
+            tts_status = dict(tts_hit.status)
+            tts_status["voice_path"] = str(voice_path)
+            tts_status["cache_hit"] = True
+            tts_status.setdefault("cache_stored_at", tts_hit.stored_at)
+            print(
+                f"[cache] TTS hit (mode={tts_status.get('mode', '-')}, "
+                f"file={voice_path.name}, skipped synthesis)"
+            )
+    if voice_path is None:
+        voice_path, tts_status = synthesize_narration(
+            script_text,
+            voice_target,
+            ffmpeg=ffmpeg,
+            openai_api_key=openai_api_key,
+            qwen_api_key=qwen_api_key,
+            volc_appid=volc_appid,
+            volc_access_token=volc_access_token,
+            force_mock=force_mock,
+        )
+        # Don't cache the silent fallback — if a key gets fixed later
+        # we want the next run to re-attempt real TTS, not get stuck
+        # with silence forever.
+        is_silent_fallback = tts_status.get("mode") == "offline_silence"
+        if (
+            not is_silent_fallback
+            and voice_path.exists()
+            and voice_path.stat().st_size > 0
+        ):
+            cache.store(
+                "tts",
+                tts_key,
+                outputs=[voice_path.name],
+                status=tts_status,
+            )
     tts_status_path = writer.write_json("tts_status.json", tts_status)
-    mastered_voice_path, audio_mastering_status = master_voice_audio(
-        voice_path,
-        writer.output_path("voice_mastered.mp3"),
-        ffmpeg=ffmpeg,
+
+    # === Stage: Audio mastering ===
+    mastered_target = writer.output_path("voice_mastered.mp3")
+    master_key = cache.key(
+        "audio_master",
+        # ``mastering_decision_v4`` flag forces a refresh after we added
+        # the CLEAN_GAIN regime — pure ``volume=Xdb`` boost for inputs
+        # that are too quiet for passthrough but have enough TP headroom
+        # to amplify cleanly without compression. Old v3 caches landed
+        # Doubao 2.0 (-22 LUFS, 6+ dB TP headroom) into passthrough,
+        # which left it 6 dB too quiet for short-video parity. v4 brings
+        # it up to ~-16 LUFS with zero LRA loss.
+        inputs={"voice_path": str(voice_path), "ffmpeg_version_pin": "mastering_decision_v6_boost14"},
     )
-    audio_mastering_status_path = writer.write_json("audio_mastering_status.json", audio_mastering_status)
+    master_hit = cache.lookup(
+        "audio_master", master_key, expected_outputs=["voice_mastered.mp3"]
+    )
+    if master_hit is not None:
+        mastered_voice_path = stage_subdir(writer.output_dir, "voice_mastered.mp3")
+        audio_mastering_status = dict(master_hit.status)
+        audio_mastering_status["cache_hit"] = True
+        audio_mastering_status.setdefault("cache_stored_at", master_hit.stored_at)
+        print("[cache] audio mastering hit (skipped loudnorm pass)")
+    else:
+        mastered_voice_path, audio_mastering_status = master_voice_audio(
+            voice_path,
+            mastered_target,
+            ffmpeg=ffmpeg,
+        )
+        if mastered_voice_path.exists() and mastered_voice_path.stat().st_size > 0:
+            cache.store(
+                "audio_master",
+                master_key,
+                outputs=["voice_mastered.mp3"],
+                status=audio_mastering_status,
+            )
+    audio_mastering_status_path = writer.write_json(
+        "audio_mastering_status.json", audio_mastering_status
+    )
+
+    # === Stage: Word-level subtitle alignment via faster-whisper ===
+    #
+    # Soft dep — if GPU / model / whisper lib is missing the aligner
+    # returns ``None`` and we keep the legacy estimated timing. The
+    # cache covers the success path (faster-whisper output is
+    # deterministic for a given audio + model combination); a previous
+    # failure is *not* cached so a fixed environment can succeed on the
+    # next run without ``--no-cache``.
+    word_alignment_status: dict[str, Any] = {"status": "skipped", "reason": "not_attempted"}
+    word_alignment_result = None
+    align_key = cache.key(
+        "word_align",
+        inputs={
+            "voice_path": str(mastered_voice_path),
+            "model": "small",
+            "language": "zh",
+        },
+    )
+    align_hit = cache.lookup(
+        "word_align", align_key, expected_outputs=["subtitle_word_alignment.json"]
+    )
+    if align_hit is not None:
+        try:
+            from .whisperx_aligner import AlignmentResult
+
+            cached_doc = json.loads(
+                stage_subdir(writer.output_dir, "subtitle_word_alignment.json")
+                .read_text(encoding="utf-8")
+            )
+            word_alignment_result = AlignmentResult.from_dict(cached_doc)
+            word_alignment_status = dict(align_hit.status)
+            word_alignment_status["cache_hit"] = True
+            word_alignment_status.setdefault("cache_stored_at", align_hit.stored_at)
+            print(
+                f"[cache] word alignment hit "
+                f"(words={word_alignment_status.get('word_count', '?')}, "
+                f"avg_conf={word_alignment_status.get('average_confidence', '?')})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            word_alignment_result = None
+            word_alignment_status = {
+                "status": "error",
+                "error": f"cache rehydrate failed: {exc!r}",
+            }
+    if word_alignment_result is None and align_hit is None:
+        try:
+            from .whisperx_aligner import align_voice_words
+
+            word_alignment_result = align_voice_words(mastered_voice_path)
+        except Exception as exc:  # noqa: BLE001 — aligner is soft, never block render
+            word_alignment_status = {"status": "error", "error": repr(exc)}
+        if word_alignment_result is not None:
+            writer.write_json(
+                "subtitle_word_alignment.json",
+                word_alignment_result.as_dict(),
+            )
+            word_alignment_status = {
+                "status": "ok",
+                "device": word_alignment_result.device,
+                "compute_type": word_alignment_result.compute_type,
+                "model": word_alignment_result.model_name,
+                "word_count": word_alignment_result.word_count(),
+                "average_confidence": round(word_alignment_result.average_confidence(), 4),
+                "realtime_factor": round(
+                    word_alignment_result.audio_duration_seconds
+                    / max(word_alignment_result.elapsed_seconds, 0.01),
+                    2,
+                ),
+            }
+            cache.store(
+                "word_align",
+                align_key,
+                outputs=["subtitle_word_alignment.json"],
+                status=word_alignment_status,
+            )
+    writer.write_json("subtitle_word_alignment_status.json", word_alignment_status)
 
     duration = probe_audio_duration(mastered_voice_path, ffmpeg=ffmpeg) or probe_audio_duration(voice_path, ffmpeg=ffmpeg) or estimate_duration(script_text)
-    director_plan = assign_scene_timing(director_plan, duration)
+    # Build a lightweight LLM client just for the ``flow_steps``
+    # extraction inside the director. We always use gpt-4o-mini here
+    # regardless of the upstream rewrite model — flow_steps is a 50-token
+    # output structured task where mini is plenty, and forcing the
+    # smaller model keeps the per-render cost in the cents range. When
+    # OPENAI_API_KEY isn't available (mock / local renders) we pass
+    # ``None`` and the director falls back to its heuristic extractor.
+    director_llm = None
+    if openai_api_key and not force_mock:
+        director_llm = LLMClient(
+            provider="openai",
+            model="gpt-4o-mini",
+            mock=False,
+            openai_api_key=openai_api_key,
+        )
+    director_plan = assign_scene_timing(
+        director_plan,
+        duration,
+        llm=director_llm,
+        cache_dir=writer.output_dir,
+    )
     write_director_artifacts(writer, director_plan)
+    skill_registry_path = writer.write_json(
+        "skill_registry.json",
+        build_skill_registry_report(
+            active_skill_ids=[
+                "remotion-shotlist-renderer",
+                "video-self-review",
+                "browser-evidence-capture",
+            ]
+        ),
+    )
     sentences = split_sentences(script_text)
     segments = build_caption_segments(sentences, duration)
+    # Re-time captions to actual TTS pace via WhisperX word timestamps.
+    # Without this the hook subtitle drifts ~2s behind voice on dense
+    # English-mixed lines (Aider sample: caption still says
+    # "ChatGPT 粘代码" at 3.9s while voice already moved on at 1.7s).
+    if word_alignment_result is not None:
+        segments = _align_caption_segments_to_whisperx(segments, word_alignment_result)
     subtitle_plan = build_subtitle_plan(segments, director_plan.as_dict())
     subtitle_plan_path = writer.write_json("subtitle_plan.json", subtitle_plan)
-    title = extract_title_text(script_path.read_text(encoding="utf-8")) or content_id
+    title = _resolve_display_title(
+        script_text=script_path.read_text(encoding="utf-8"),
+        writer=writer,
+        content_id=content_id,
+    )
     brand_template = build_brand_template(title, content_id=content_id)
     brand_template_path = writer.write_json("brand_template.json", brand_template)
     cover_path = writer.output_path("cover.png")
@@ -144,15 +483,61 @@ def render_video_package(
         writer.output_path("visual_asset_card.png"),
         ffmpeg=ffmpeg,
     )
+    visual_evidence_items = collect_visual_evidence_items(writer)
 
     subtitle_zh_path = writer.output_path("subtitles.zh.srt")
     subtitle_zh_path.write_text(build_srt_from_segments(segments, "zh"), encoding="utf-8")
 
-    english_sentences, translation_status = translate_subtitles(
-        sentences,
-        openai_api_key=openai_api_key,
-        force_mock=force_mock,
+    # === Stage: Subtitle translation ===
+    #
+    # Translation is pure text-in/text-out and the most expensive call
+    # in this stage (gpt-4o-mini with multi-second latency per call).
+    # We piggy-back ``english_sentences`` onto the cached status so
+    # rehydration only needs the single .json file.
+    translate_key = cache.key(
+        "translate",
+        inputs={
+            "sentences": list(sentences),
+            "force_mock": bool(force_mock),
+            "has_openai": bool(openai_api_key),
+            "model": "gpt-4o-mini",
+        },
     )
+    translate_hit = cache.lookup("translate", translate_key, expected_outputs=[])
+    if translate_hit is not None and translate_hit.status.get("english_sentences"):
+        cached = translate_hit.status
+        english_sentences = list(cached.get("english_sentences") or [])
+        translation_status = {
+            k: v for k, v in cached.items() if k != "english_sentences"
+        }
+        translation_status["cache_hit"] = True
+        translation_status.setdefault("cache_stored_at", translate_hit.stored_at)
+        print(
+            f"[cache] subtitle translation hit "
+            f"({len(english_sentences)} sentences, mode={translation_status.get('mode', '-')})"
+        )
+    else:
+        english_sentences, translation_status = translate_subtitles(
+            sentences,
+            openai_api_key=openai_api_key,
+            force_mock=force_mock,
+        )
+        # Only cache the network/openai mode — fallback placeholder is
+        # cheap to re-run and we don't want stale "fallback used because
+        # API key was missing" answers to win after the user fixes their
+        # key.
+        if (
+            translation_status.get("mode") == "openai"
+            and len(english_sentences) == len(sentences)
+        ):
+            cache_status = dict(translation_status)
+            cache_status["english_sentences"] = list(english_sentences)
+            cache.store(
+                "translate",
+                translate_key,
+                outputs=[],
+                status=cache_status,
+            )
     translation_status_path = writer.write_json("subtitle_translation_status.json", translation_status)
 
     subtitle_en_path = writer.output_path("subtitles.en.srt")
@@ -188,6 +573,13 @@ def render_video_package(
             final_video_path=video_path,
             cover_path=cover_path,
             evidence_image_path=visual_asset_path,
+            evidence_items=visual_evidence_items,
+            director_plan=director_plan.as_dict(),
+            # ``final_video.mp4`` 现在默认就是 16:9 1920x1080 主成片。
+            # 抖音 / B 站 / YouTube 全部直接吃这个文件。
+            orientation="landscape",
+            repo_name=repo_name,
+            quality_tier=quality_tier,
         )
     if remotion_status.get("render_engine_actual") != "remotion":
         render_status = render_vertical_video(
@@ -203,18 +595,92 @@ def render_video_package(
             visual_asset_status=visual_asset_status,
             director_plan=director_plan.as_dict(),
         )
+
+    # Optional 9:16 portrait render. Main ``final_video.mp4`` is 16:9 by default;
+    # only when caller passes ``render_portrait=True`` do we also produce
+    # ``final_video_portrait.mp4`` for platforms that demand a native vertical
+    # cut. Reuses all assets already copied into the Remotion public dir so
+    # the extra pass is close to zero setup cost.
+    portrait_status: dict[str, Any] = {"status": "skipped", "reason": "render_portrait disabled"}
+    if render_portrait and remotion_status.get("render_engine_actual") == "remotion":
+        portrait_video_path = writer.output_path("final_video_portrait.mp4")
+        portrait_cover_path = writer.output_path("cover_portrait.png")
+        portrait_remotion_status, portrait_render_status = render_remotion_video(
+            project_root=project_root,
+            content_id=content_id,
+            title=title,
+            duration_seconds=duration,
+            audio_path=mastered_voice_path,
+            subtitle_plan=subtitle_plan,
+            output_dir=writer.output_dir,
+            final_video_path=portrait_video_path,
+            cover_path=portrait_cover_path,
+            evidence_image_path=visual_asset_path,
+            evidence_items=visual_evidence_items,
+            director_plan=director_plan.as_dict(),
+            orientation="portrait",
+            repo_name=repo_name,
+            quality_tier=quality_tier,
+        )
+        portrait_status = {
+            **portrait_remotion_status,
+            "render_status": portrait_render_status,
+            "video_path": str(portrait_video_path) if portrait_video_path.exists() else "",
+            "cover_path": str(portrait_cover_path) if portrait_cover_path.exists() else "",
+        }
+    portrait_status_path = writer.write_json("portrait_render_status.json", portrait_status)
+    # Legacy landscape_render_status.json is now redundant (主成片已是 landscape)，
+    # but we still write a stub so老的消费方不会 404。内容指向主成片本身。
+    legacy_landscape_status = {
+        "status": "merged_into_main",
+        "reason": "final_video.mp4 现在默认就是 16:9 主成片，不再生成独立 final_video_landscape.mp4",
+        "video_path": str(video_path) if video_path.exists() else "",
+    }
+    landscape_status_path = writer.write_json(
+        "landscape_render_status.json", legacy_landscape_status
+    )
+
     remotion_status_path = writer.write_json("remotion_status.json", remotion_status)
     render_status.setdefault("video_path", str(video_path))
     render_status.setdefault("voice_path", str(mastered_voice_path))
     render_status.setdefault("subtitle_path", str(burned_subtitle_path))
     render_status.setdefault("subtitle_mode", burned_subtitle_mode)
     render_status.setdefault("duration_seconds", duration)
-    render_status.setdefault("resolution", "1080x1920")
+    # Main render is 16:9 by default. ``render_remotion_video`` already stamps
+    # an accurate resolution when it actually renders; this setdefault only
+    # kicks in when we fell through to the ffmpeg fallback (which still outputs
+    # 1080x1920). So: Remotion path = 1920x1080; fallback = 1080x1920.
+    fallback_resolution = "1920x1080" if remotion_status.get("render_engine_actual") == "remotion" else "1080x1920"
+    render_status.setdefault("resolution", fallback_resolution)
     render_status.setdefault("subtitle_burned", True)
+    # Subtitle timing source: ``word_level`` when WhisperX gave us per-word
+    # timestamps with reasonable confidence; ``estimated`` when we fell back
+    # to even-split durations. Consumed by ``build_video_quality_report`` to
+    # lift subtitle_quality_score from 80 → 100 (see §14.2 of the spec).
+    if word_alignment_result is not None and word_alignment_result.average_confidence() >= 0.85:
+        render_status.setdefault("subtitle_timing_source", "word_level")
+        render_status.setdefault("word_level_aligned", True)
+        render_status.setdefault(
+            "word_level_confidence",
+            round(word_alignment_result.average_confidence(), 4),
+        )
+        render_status.setdefault("word_level_count", word_alignment_result.word_count())
+    else:
+        render_status.setdefault("subtitle_timing_source", "estimated")
+        render_status.setdefault("word_level_aligned", False)
     render_status.setdefault("template_id", brand_template.get("template_id", BRAND_TEMPLATE_ID))
     render_status.setdefault("brand_name", brand_template.get("brand_name", BRAND_NAME))
     render_status.setdefault("cover_status", cover_status or {})
     render_status.setdefault("visual_asset_status", visual_asset_status or {"status": "missing"})
+    render_status.setdefault("visual_evidence_asset_count", len(visual_evidence_items))
+    # Subtitle highlight metrics — feed into build_video_quality_report so the
+    # rubric can score the new subtitle_highlight dimension. We compute on the
+    # subtitle_plan.json that just got rendered, not on the SRT, because the
+    # plan is the canonical source of highlight_words.
+    render_status.setdefault(
+        "subtitle_highlight_metrics",
+        _compute_subtitle_highlight_metrics(writer),
+    )
     render_status.setdefault(
         "director_status",
         {
@@ -234,14 +700,57 @@ def render_video_package(
             "resource_dir": str(writer.output_dir),
             "workspace_dir": str(writer.workspace_dir),
             "output_layout": "one_resource_one_directory",
+            # ``final_video.mp4`` 本身就是 landscape 主成片，保留 landscape_*
+            # 字段只为兼容老消费方。
+            "landscape_status": "merged_into_main",
+            "landscape_video_path": str(video_path) if video_path.exists() else "",
+            "landscape_status_path": str(landscape_status_path),
+            "portrait_status": portrait_status.get("status"),
+            "portrait_video_path": portrait_status.get("video_path") or "",
+            "portrait_status_path": str(portrait_status_path),
+            "orientation": "landscape",
         }
     )
     render_status_path = writer.write_json("render_status.json", render_status)
+    visual_asset_pack_path = writer.output_path("visual_asset_pack.json")
+    visual_asset_pack: dict[str, Any] | None = None
+    if visual_asset_pack_path.exists():
+        try:
+            visual_asset_pack = json.loads(visual_asset_pack_path.read_text(encoding="utf-8"))
+        except Exception:
+            visual_asset_pack = None
+
+    # ``collect_visual_evidence_items`` only reads browser_agent / snapshot /
+    # readme artifacts — it's blind to YouTube-source evidence which lives in
+    # ``remotion_props_*.json`` (keyframes, thumbnails). Merge them in so the
+    # diversity metric sees what actually ends up on screen, otherwise a
+    # YouTube-sourced clip scores ``real_asset_type_count=1`` even when the
+    # Remotion props carry 8 distinct evidence frames across 2 roles.
+    merged_evidence_items: list[dict[str, str]] = list(visual_evidence_items or [])
+    for orientation_variant in ("landscape", "portrait"):
+        props_candidate = writer.output_path(f"remotion_props_{orientation_variant}.json")
+        if not props_candidate.exists():
+            continue
+        try:
+            _props = json.loads(props_candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for ev in _props.get("evidenceItems", []) or []:
+            if not isinstance(ev, dict):
+                continue
+            role = ev.get("role")
+            src = ev.get("src") or ev.get("path")
+            if role and src:
+                merged_evidence_items.append({"role": str(role), "src": str(src)})
+
     video_quality_report = build_video_quality_report(
         director_plan=director_plan.as_dict(),
         tts_status=tts_status,
         translation_status=translation_status,
         render_status=render_status,
+        visual_asset_pack=visual_asset_pack,
+        evidence_items=merged_evidence_items,
+        audio_mastering_status=audio_mastering_status,
     )
     video_quality_report_path = writer.write_json("video_quality_report.json", video_quality_report)
     visual_qc_report = run_visual_qc(
@@ -252,6 +761,16 @@ def render_video_package(
         shot_list_path=writer.output_path("shot_list.json"),
     )
     visual_qc_report_path = writer.write_json("visual_qc_report.json", visual_qc_report)
+    video_self_review = run_video_self_review(
+        video_path=video_path,
+        output_dir=writer.output_dir,
+        ffmpeg=ffmpeg,
+        director_plan=director_plan.as_dict(),
+        render_status=render_status,
+    )
+    video_self_review_path = writer.write_json("video_self_review.json", video_self_review)
+    bgm_status = mix_bgm(video_path=video_path, output_dir=writer.output_dir)
+    bgm_status_path = write_bgm_status(writer.output_dir, bgm_status)
     render_manifest_v6 = build_v6_render_manifest(
         content_id=content_id,
         output_dir=writer.output_dir,
@@ -269,6 +788,10 @@ def render_video_package(
             "render_status_path": str(render_status_path),
             "remotion_status_path": str(remotion_status_path),
             "visual_qc_report_path": str(visual_qc_report_path),
+            "video_self_review_path": str(video_self_review_path),
+            "skill_registry_path": str(skill_registry_path),
+            "bgm_status_path": str(bgm_status_path),
+            "video_with_bgm_path": bgm_status.get("output_path"),
         },
         remotion_status=remotion_status,
     )
@@ -396,6 +919,10 @@ def build_video_render_manifest(
             "audio_mastered": audio_mastering_status.get("success") is True,
             "visual_qc_score": visual_qc_report.get("score", 0),
             "visual_qc_pass": visual_qc_report.get("pass", False),
+            "orientation": render_status.get("orientation", "landscape"),
+            "resolution": render_status.get("resolution", "1920x1080"),
+            "quality_tier": render_status.get("quality_tier", "release"),
+            "has_portrait_cut": bool(render_status.get("portrait_video_path")),
         },
         "artifacts": {
             "video_path": str(video_path),
@@ -418,36 +945,279 @@ def build_video_render_manifest(
     }
 
 
+_HOOK_LATIN_NAME_RE = re.compile(r"[A-Z][A-Za-z0-9]{2,}")
+_HOOK_ACTION_VERBS = (
+    # Tool/CLI verbs: "让/帮 X 控制/打开/修复 Y"
+    "让", "帮", "跑", "去", "把", "拿", "从", "在", "控制",
+    "打开", "修复", "自动", "识别", "访问", "接管", "发送", "告诉",
+    # Creator-portrait verbs: "他自己写/上线/做了 X"
+    "写", "上线", "做", "做出", "发布", "打造", "搭", "搭出",
+    "搞", "干", "建", "造", "推出", "卖", "赚", "盈利", "运营",
+    "创办", "创建", "开发", "上架", "打磨", "孵化", "拉到", "跑到",
+)
+
+
+def _hook_has_concrete_fact(director_plan: dict[str, Any]) -> bool:
+    """Does the opening hook voiceover carry a concrete fact?
+
+    We score a hook as "concrete" (= full 100 hook_strength) when the first
+    scene's voiceover contains BOTH:
+      - a proper noun anchor (English brand like ``Peter``/``OpenClaw`` or
+        ≥2 CJK noun-ish characters), AND
+      - an action-verb token indicating what that anchor *did*.
+
+    This maps to the LLM prompt rule 第 1 句直接进 key_moments[0] 里的
+    具体场景 + 人名 + 动作 — it is the signal the rule was actually followed.
+    """
+    scenes = director_plan.get("scenes") if isinstance(director_plan, dict) else None
+    if not isinstance(scenes, list) or not scenes:
+        return False
+    hook_text = ""
+    first = scenes[0] if isinstance(scenes[0], dict) else {}
+    for key in ("voiceover", "hook", "text", "subtitle", "narration"):
+        value = first.get(key)
+        if isinstance(value, str) and value.strip():
+            hook_text = value.strip()
+            break
+    if not hook_text:
+        return False
+    # Trim to first 3-ish seconds of narration (~60 CJK chars / 40 Latin chars).
+    opener = hook_text[:120]
+    has_name = bool(_HOOK_LATIN_NAME_RE.search(opener))
+    has_action = any(verb in opener for verb in _HOOK_ACTION_VERBS)
+    return has_name and has_action
+
+
+def _compute_subtitle_highlight_metrics(writer: ArtifactWriter) -> dict[str, Any]:
+    """Read the rendered ``subtitle_plan.json`` and compute the two metrics
+    the rubric needs:
+
+    - ``cues_with_highlight / cue_total``: subtitle coverage. Reference
+      accounts highlight ~50% of cues; we set the rubric ramp at 30%.
+    - ``keywords_in_text / keywords_total``: an integrity check that the
+      keywords actually appear in their cue's ``text``. After the
+      ``subtitle_engine._highlight_words`` rewrite this should always be
+      100%, but we compute it anyway so any future regression (e.g.
+      keyword serialisation truncating ``"impact_t"``) gets caught.
+    """
+    plan_path = writer.output_path("subtitle_plan.json")
+    if not plan_path.exists():
+        return {}
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    subs = plan.get("subtitles") or []
+    if not subs:
+        return {}
+    cue_total = len(subs)
+    cues_with_highlight = 0
+    keywords_total = 0
+    keywords_in_text = 0
+    for cue in subs:
+        if not isinstance(cue, dict):
+            continue
+        words = cue.get("highlight_words") or []
+        text = str(cue.get("text") or "")
+        if words:
+            cues_with_highlight += 1
+        for word in words:
+            if not isinstance(word, str) or not word:
+                continue
+            keywords_total += 1
+            if word in text:
+                keywords_in_text += 1
+    return {
+        "cue_total": cue_total,
+        "cues_with_highlight": cues_with_highlight,
+        "keywords_total": keywords_total,
+        "keywords_in_text": keywords_in_text,
+    }
+
+
 def build_video_quality_report(
     *,
     director_plan: dict[str, Any],
     tts_status: dict[str, Any],
     translation_status: dict[str, Any],
     render_status: dict[str, Any],
+    visual_asset_pack: dict[str, Any] | None = None,
+    evidence_items: list[dict[str, Any]] | None = None,
+    audio_mastering_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     shots = director_plan.get("shots", []) if isinstance(director_plan, dict) else []
     assets = director_plan.get("assets", []) if isinstance(director_plan, dict) else []
     duration = float(render_status.get("duration_seconds") or 0.0)
     visual_types = {str(shot.get("visual_type")) for shot in shots if isinstance(shot, dict) and shot.get("visual_type")}
-    real_asset_types = {str(asset.get("role")) for asset in assets if isinstance(asset, dict) and asset.get("path")}
+    # Real asset diversity is the union of three different asset surfaces:
+    #   1. ``director_plan["assets"]`` -- legacy generic visual asset list
+    #   2. ``visual_asset_pack["assets"]`` -- the curated pack written by the
+    #      visual asset stage (cover, evidence, card, etc.)
+    #   3. evidenceItems handed to Remotion (YouTube keyframes, thumbnails,
+    #      browser screenshots, ...)
+    # We previously only looked at #1, which has been empty for every
+    # YouTube-source candidate -- silently downgrading every video to "diversity
+    # too low" even when 8 evidence frames in 2 roles were on screen.
+    real_asset_types: set[str] = set()
+    for asset in assets:
+        if isinstance(asset, dict) and asset.get("path") and asset.get("role"):
+            real_asset_types.add(str(asset["role"]))
+    if isinstance(visual_asset_pack, dict):
+        for asset in visual_asset_pack.get("assets", []) or []:
+            if not isinstance(asset, dict):
+                continue
+            role = asset.get("role") or asset.get("type") or asset.get("kind")
+            if role and (asset.get("path") or asset.get("src")):
+                real_asset_types.add(str(role))
+        for atype in visual_asset_pack.get("asset_types", []) or []:
+            if atype:
+                real_asset_types.add(str(atype))
+    if isinstance(evidence_items, list):
+        for item in evidence_items:
+            if isinstance(item, dict) and item.get("role") and item.get("src"):
+                real_asset_types.add(str(item["role"]))
     shot_count = len(shots) if isinstance(shots, list) else 0
     expected_shots = max(1, int(duration / 4.5)) if duration else max(1, shot_count)
-    visual_density_score = min(100, int(shot_count / expected_shots * 88)) if expected_shots else 0
+    # visual_density: pacing (shots/sec) — up to 100 when we hit target density.
+    visual_density_score = min(100, int(shot_count / expected_shots * 100)) if expected_shots else 0
     asset_diversity_score = min(100, 36 + len(real_asset_types) * 24 + len(visual_types) * 6)
-    subtitle_quality_score = 86 if render_status.get("subtitle_burned") is not False else 40
-    voice_quality_score = 92 if tts_status.get("mode") == "openai" else 25
-    hook_strength_score = 86 if any(str(shot.get("visual_type")) == "impact_title_card" for shot in shots if isinstance(shot, dict)) else 55
+
+    # --- shot_pacing (0.08) ----------------------------------------------
+    # Per-shot duration ceiling. The previous ``visual_density_score`` only
+    # measured *count* — a 3-min video could ship 30 shots but with a
+    # single 25s shot at the end (we shipped exactly this on yt and codex).
+    # ``shot_pacing_score`` punishes any shot >5s and rewards mean ≤4.5s.
+    shot_durations = [float(s.get("duration") or 0.0) for s in shots if isinstance(s, dict)]
+    if shot_durations:
+        max_shot = max(shot_durations)
+        mean_shot = sum(shot_durations) / len(shot_durations)
+        # 100 when max ≤ 5s and mean ≤ 4.5s; drops 8 points per second over.
+        excess_max = max(0.0, max_shot - 5.0)
+        excess_mean = max(0.0, mean_shot - 4.5)
+        shot_pacing_score = max(40, int(100 - excess_max * 8 - excess_mean * 12))
+    else:
+        shot_pacing_score = 40
+        max_shot = 0.0
+        mean_shot = 0.0
+
+    # --- subtitle (0.10) + subtitle_highlight (0.08) ---------------------
+    subtitle_burned = render_status.get("subtitle_burned") is not False
+    word_level_aligned = bool(
+        render_status.get("word_level_aligned")
+        or render_status.get("subtitle_timing_source") == "word_level"
+    )
+    if not subtitle_burned:
+        subtitle_quality_score = 30
+    elif word_level_aligned:
+        subtitle_quality_score = 100
+    else:
+        subtitle_quality_score = 80
+    # highlight 命中率：actual highlighted cues / total cues. The reference
+    # accounts highlight roughly every other cue (45-65%), but for a
+    # narrative video 25-40% is realistic. Score ramps linearly to 100 at
+    # 30% non-empty + ≥90% in-text match. This is the dimension that lets
+    # the rubric notice the "白字字幕" regression we shipped for months.
+    sub_metrics = render_status.get("subtitle_highlight_metrics") or {}
+    cue_total = int(sub_metrics.get("cue_total") or 0)
+    cues_with_highlight = int(sub_metrics.get("cues_with_highlight") or 0)
+    keywords_in_text = int(sub_metrics.get("keywords_in_text") or 0)
+    keywords_total = int(sub_metrics.get("keywords_total") or 0)
+    coverage = cues_with_highlight / cue_total if cue_total else 0.0
+    accuracy = keywords_in_text / keywords_total if keywords_total else 1.0
+    subtitle_highlight_score = max(30, min(100, int(coverage * (100 / 0.30) * accuracy)))
+
+    # --- voice (0.08) + audio_lufs (0.06) + audio_lra (0.06) -------------
+    real_voice_modes = {"volc_doubao_bigtts", "dashscope_cosyvoice", "openai"}
+    real_voice_providers = {"doubao", "dashscope", "openai"}
+    has_real_voice = (
+        tts_status.get("mode") in real_voice_modes
+        or tts_status.get("provider") in real_voice_providers
+    )
+    mastering = audio_mastering_status or {}
+    has_mastered_voice = bool(mastering.get("success"))
+    if not has_real_voice:
+        voice_quality_score = 25
+    elif has_mastered_voice:
+        voice_quality_score = 100
+    else:
+        voice_quality_score = 75
+    # Decode the dual-pass measurement we now record on every render.
+    final_loudness = mastering.get("final_loudness") or {}
+
+    def _f(key: str, default: float) -> float:
+        try:
+            return float(final_loudness.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    final_lufs = _f("input_i", 0.0)
+    final_lra = _f("input_lra", 0.0)
+    if final_lufs:
+        # 100 when within ±1 dB of -14 LUFS. Drops 12 points per dB beyond.
+        audio_lufs_score = max(40, int(100 - abs(final_lufs - (-14.0)) * 12))
+    else:
+        audio_lufs_score = 60  # measurement missing — neutral.
+    if final_lra:
+        # 100 at LRA 6+, drops 10 per LU below 6 down to floor 30.
+        audio_lra_score = max(30, int(100 - max(0.0, 6.0 - final_lra) * 10))
+    else:
+        audio_lra_score = 50
+
+    # --- hook (0.10) ------------------------------------------------------
+    # The hook is always the first scene (scene_id="hook" in director_plan).
+    # We look at shots within that scene specifically — not shots[:3] (which
+    # misses the impact_title_card when the LLM put a viz_bar_chart first
+    # for a stats hook) and not the full shot list (which would falsely
+    # light up if an impact card appeared 80s into the video).
+    #
+    # Hook visual types accepted:
+    #   - impact_title_card: tool/cli stats hook ("9.2 万 Star")
+    #   - portrait_card / tweet_quote_card: creator-portrait hook
+    #   - viz_*: any LLM-extracted visualization (bar chart of stars,
+    #     timeline of releases, etc.) — these are *stronger* hooks than
+    #     typography because they show, not tell.
+    hook_visual_types = {"impact_title_card", "portrait_card", "tweet_quote_card"}
+    hook_shots = [
+        shot for shot in shots
+        if isinstance(shot, dict) and shot.get("scene_id") == "hook"
+    ]
+    if not hook_shots:
+        # Fall back to first 4 shots if no shot is tagged scene_id="hook".
+        hook_shots = [s for s in shots[:4] if isinstance(s, dict)]
+    has_impact_card = any(
+        str(shot.get("visual_type")) in hook_visual_types
+        or str(shot.get("visual_type")).startswith("viz_")
+        for shot in hook_shots
+    )
+    hook_has_concrete_fact = _hook_has_concrete_fact(director_plan)
+    if not has_impact_card:
+        hook_strength_score = 55
+    elif hook_has_concrete_fact:
+        hook_strength_score = 100
+    else:
+        hook_strength_score = 75
+
+    # Reweighted toward listener perception: subtitle_highlight + audio_lra +
+    # audio_lufs + shot_pacing together account for 0.28 of the total. Without
+    # these, the previous formula's mathematical ceiling was 93.8 and our
+    # videos clustered at 92 regardless of how dead the actual viewing
+    # experience was. Now a video with no highlights / silent voice / 25s
+    # static shots will score in the 60s where it belongs.
     video_quality_score = int(
         round(
-            visual_density_score * 0.24
-            + asset_diversity_score * 0.22
-            + subtitle_quality_score * 0.18
-            + voice_quality_score * 0.22
+            visual_density_score * 0.20
+            + asset_diversity_score * 0.20
+            + shot_pacing_score * 0.08
+            + subtitle_quality_score * 0.10
+            + subtitle_highlight_score * 0.08
+            + voice_quality_score * 0.08
+            + audio_lufs_score * 0.06
+            + audio_lra_score * 0.06
             + hook_strength_score * 0.14
         )
     )
     blocking_reasons: list[str] = []
-    if tts_status.get("mode") != "openai":
+    if not has_real_voice:
         blocking_reasons.append("Voice is offline silence/TTS fallback; publish requires real narration.")
     if len(real_asset_types) < 2:
         blocking_reasons.append("Visual asset diversity is too low; need at least two real asset types.")
@@ -455,27 +1225,102 @@ def build_video_quality_report(
         blocking_reasons.append("Shot list is too thin for v4 industrial pacing.")
     if render_status.get("subtitle_burned") is False:
         blocking_reasons.append("Subtitle burn failed; final video is not publish-ready.")
-    publish_ready = not blocking_reasons and video_quality_score >= 75
+    # Draft tier (540p / ultrafast) 是给本地预览用的，再高的质量分也不能直接发——
+    # 把它算成 blocking_reason，避免有人盯着 web pill "≥95" 顺手点发布。
+    if str(render_status.get("quality_tier") or "release").lower() == "draft":
+        blocking_reasons.append(
+            "Draft render (540p / x264 ultrafast); rerun without --draft for publish."
+        )
+    # 对齐 ``高质量视频生成工业级方案.md §14.2`` 发布门槛：
+    #   ≥ 95 自动发布 / 80-94 人工检查 / < 80 不建议发布
+    # ``publish_ready`` 对应"自动发布"档位——80-94 的中间档需要人工手动在发布
+    # 看板上拍板，所以这里走 95 硬阈值，而不是直接放行 80+。
+    publish_ready = not blocking_reasons and video_quality_score >= 95
+    needs_human_review = (
+        not blocking_reasons and 80 <= video_quality_score < 95
+    )
     suggestions = [
         "Add repo screenshots plus README visuals so evidence and explanation shots do not rely on cards only.",
         "Replace offline silence with real Chinese narration before publishing.",
         "Materialize cropped evidence/card assets inside visual_asset_pack directories.",
     ]
+    # Actionable next-score advice so reviewers can see where the missing
+    # points live instead of staring at a single aggregate number.
+    score_gap_hints: list[str] = []
+    if subtitle_quality_score < 100:
+        score_gap_hints.append(
+            f"subtitle {subtitle_quality_score}/100 — 落地 WhisperX word-level 对齐可+{100 - subtitle_quality_score}"
+        )
+    if voice_quality_score < 100:
+        score_gap_hints.append(
+            f"voice {voice_quality_score}/100 — 打开 audio_mastering (loudnorm) 可+{100 - voice_quality_score}"
+        )
+    if hook_strength_score < 100:
+        score_gap_hints.append(
+            f"hook {hook_strength_score}/100 — 钩子段 3 秒内加具体人名+动作可+{100 - hook_strength_score}"
+        )
+    if visual_density_score < 100:
+        score_gap_hints.append(
+            f"visual_density {visual_density_score}/100 — 每 4.5s 一个 shot 可拉满"
+        )
+    if asset_diversity_score < 100:
+        score_gap_hints.append(
+            f"asset_diversity {asset_diversity_score}/100 — 增加真实素材类型可拉满"
+        )
+    if shot_pacing_score < 100:
+        score_gap_hints.append(
+            f"shot_pacing {shot_pacing_score}/100 — 当前最长镜头 {max_shot:.1f}s "
+            f"均值 {mean_shot:.2f}s，目标 ≤5/4.5"
+        )
+    if subtitle_highlight_score < 100:
+        score_gap_hints.append(
+            f"subtitle_highlight {subtitle_highlight_score}/100 — 当前 highlight "
+            f"覆盖 {coverage*100:.0f}% / 命中 {accuracy*100:.0f}%，目标 30%/100%"
+        )
+    if audio_lufs_score < 100 and final_lufs:
+        score_gap_hints.append(
+            f"audio_lufs {audio_lufs_score}/100 — 当前 {final_lufs:.1f} LUFS，目标 -14 ±1"
+        )
+    if audio_lra_score < 100:
+        if final_lra:
+            score_gap_hints.append(
+                f"audio_lra {audio_lra_score}/100 — 当前 {final_lra:.1f} LU，目标 ≥ 6 "
+                f"(从 TTS 端加 SSML 停顿/变速可拉起来)"
+            )
+        else:
+            score_gap_hints.append(
+                f"audio_lra {audio_lra_score}/100 — 缺少 final_loudness 测量，"
+                f"检查 audio_mastering 是否走 dual-pass"
+            )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "video_quality_score": video_quality_score,
+        "score_ceiling": 100,
+        "publish_threshold": 95,
         "visual_density_score": visual_density_score,
         "asset_diversity_score": asset_diversity_score,
+        "shot_pacing_score": shot_pacing_score,
         "subtitle_quality_score": subtitle_quality_score,
+        "subtitle_highlight_score": subtitle_highlight_score,
         "voice_quality_score": voice_quality_score,
+        "audio_lufs_score": audio_lufs_score,
+        "audio_lra_score": audio_lra_score,
         "hook_strength_score": hook_strength_score,
         "publish_ready": publish_ready,
+        "needs_human_review": needs_human_review,
         "blocking_reasons": blocking_reasons,
+        "score_gap_hints": score_gap_hints,
         "suggestions": suggestions,
         "metrics": {
             "shot_count": shot_count,
             "visual_type_count": len(visual_types),
             "real_asset_type_count": len(real_asset_types),
+            "max_shot_duration_seconds": round(max_shot, 3),
+            "mean_shot_duration_seconds": round(mean_shot, 3),
+            "subtitle_highlight_coverage": round(coverage, 4),
+            "subtitle_highlight_in_text_accuracy": round(accuracy, 4),
+            "final_lufs": final_lufs,
+            "final_lra": final_lra,
             "tts_mode": tts_status.get("mode", ""),
             "translation_mode": translation_status.get("mode", ""),
         },
@@ -518,6 +1363,119 @@ def extract_title_text(markdown: str) -> str:
     return lines[0] if lines else ""
 
 
+# Patterns that look like an internal id (and therefore must NEVER reach
+# the on-screen Cover title). ``yt_9d1a160bbcab`` / ``gh_openai_codex`` /
+# ``quality_smoke_browser_use`` all match — they're pipeline IDs, not titles.
+_INTERNAL_ID_RE = re.compile(r"^(?:yt|gh|ph|hn|fb|gen)_[A-Za-z0-9_]{4,}$")
+
+
+def _looks_like_internal_id(value: str) -> bool:
+    """True when ``value`` looks like a content_id rather than human title.
+
+    We refuse to ship anything matching this onto the Cover. Better to fall
+    back to a generic Chinese label like ``"海外 AI 信号"`` than to render
+    ``yt_9d1a160bbcab`` as 96-px cover text in front of viewers — which is
+    exactly the regression the user just caught on yt_9d1a160bbcab.
+    """
+    text = (value or "").strip()
+    if not text:
+        return True
+    if _INTERNAL_ID_RE.match(text):
+        return True
+    # Heuristic: an "id-like" string is mostly ASCII underscored hex/letters
+    # with no whitespace and no Chinese — real titles always contain either
+    # Chinese characters or at least one space.
+    if " " in text:
+        return False
+    if any("\u4e00" <= c <= "\u9fff" for c in text):
+        return False
+    if "_" in text and re.match(r"^[A-Za-z0-9_]+$", text) and len(text) <= 64:
+        return True
+    return False
+
+
+def _hook_first_sentence(markdown: str) -> str:
+    """First declarative sentence of the ``## 钩子`` section, ≤ 28 CJK chars.
+
+    Used as a Cover-title fallback when ``# 标题`` is empty. The hook
+    section's lead sentence is ALWAYS designed to grab attention, so it's
+    the closest thing to "human-readable title" we have besides the
+    ``# 标题`` header itself.
+    """
+    if not markdown:
+        return ""
+    match = re.search(r"^##\s*钩子\s*$([\s\S]*?)(?=^##\s+|^#\s+\S|\Z)", markdown, flags=re.MULTILINE)
+    if not match:
+        return ""
+    block = match.group(1).strip()
+    for raw_line in block.splitlines():
+        line = raw_line.strip().lstrip("-*+ ").strip()
+        if not line or line.startswith("#"):
+            continue
+        sentence = re.split(r"[。！？!?]", line)[0].strip()
+        if len(sentence) >= 6:
+            return sentence[:28]
+    return ""
+
+
+def _resolve_display_title(
+    *,
+    script_text: str,
+    writer: ArtifactWriter,
+    content_id: str,
+) -> str:
+    """Pick the title that actually goes on screen (Cover, brand ribbon).
+
+    Resolution order — content_id is intentionally **NOT** in this list,
+    even as last resort, because the Cover renders this string at 96 px
+    with a blinking cursor; ``yt_9d1a160bbcab`` is opaque to viewers and
+    looks like a debug leak (which it is). We prefer a generic Chinese
+    label over leaking pipeline internals.
+
+      1. ``# 标题`` first non-empty line in the script.
+      2. ``meta.title`` from the source (YouTube video title / GitHub
+         full_name / etc.) — for github_repo we trim "owner/repo" → "repo".
+      3. ``## 钩子`` first sentence (≤ 28 chars).
+      4. Generic safe fallback ``"海外 AI 信号"`` — never the content_id.
+
+    Each candidate is gated by ``_looks_like_internal_id`` so an
+    accidentally-ID-shaped value at any layer can't sneak through.
+    """
+    candidates: list[str] = []
+
+    title_from_script = extract_title_text(script_text).strip()
+    if title_from_script:
+        candidates.append(title_from_script)
+
+    try:
+        meta_path = writer.output_path("meta.json")
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta_title = str(meta.get("title") or "").strip()
+            if meta_title:
+                # github full_name "openai/codex" → display "codex" so the
+                # cover doesn't read like a path. YouTube titles already
+                # human-readable so we leave them.
+                if meta.get("source_type") == "github_repo" and "/" in meta_title:
+                    repo_only = meta_title.split("/")[-1].strip()
+                    if repo_only:
+                        candidates.append(repo_only)
+                candidates.append(meta_title)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    hook_lead = _hook_first_sentence(script_text)
+    if hook_lead:
+        candidates.append(hook_lead)
+
+    for candidate in candidates:
+        if candidate and not _looks_like_internal_id(candidate):
+            return candidate
+
+    # Generic Chinese label — viewer sees "海外 AI 信号" instead of "yt_xxx".
+    return "海外 AI 信号"
+
+
 def split_sentences(text: str) -> list[str]:
     sentences = [match.group(0).strip() for match in SENTENCE_RE.finditer(text.replace("\r", "\n"))]
     return [sentence for sentence in sentences if sentence]
@@ -536,19 +1494,213 @@ class CaptionSegment:
     text: str
 
 
+MAX_CAPTION_DURATION = 6.0  # max seconds per on-screen subtitle line
+MAX_CAPTION_CHARS = 32       # also splits over-long sentences by char count
+
+
+def _split_for_subtitle(sentence: str) -> list[str]:
+    """Break a long sentence into smaller subtitle-friendly chunks.
+
+    Empirically subtitles longer than ~6 seconds / ~32 Chinese chars are
+    hard to read on a phone screen — they wrap to multiple lines and the
+    viewer has time to read past them while the narration is still on
+    the previous clause. We respect natural inner breaks (Chinese / ASCII
+    commas, semicolons, the enumeration mark, mid-sentence quote marks)
+    when available, and only fall back to a hard char-count split if a
+    clause has no inner break at all (rare with rewriter prompt #6 which
+    instructs the LLM to keep clauses ≤ 35 chars).
+    """
+    text = sentence.strip()
+    if len(text) <= MAX_CAPTION_CHARS:
+        return [text]
+
+    # First pass: split on inner punctuation we can safely break after.
+    pieces = re.split(r"(?<=[，,、；;])", text)
+    pieces = [p.strip() for p in pieces if p.strip()]
+    if not pieces:
+        pieces = [text]
+
+    # Greedy-merge adjacent pieces while staying under the cap so we
+    # don't over-fragment short clauses (e.g. avoid '比如，' becoming
+    # its own subtitle).
+    merged: list[str] = []
+    buf = ""
+    for piece in pieces:
+        if not buf:
+            buf = piece
+            continue
+        if len(buf) + len(piece) <= MAX_CAPTION_CHARS:
+            buf += piece
+        else:
+            merged.append(buf)
+            buf = piece
+    if buf:
+        merged.append(buf)
+
+    # Last resort: any single chunk still too long (no inner punctuation
+    # at all) gets cut by char count — but never split inside an
+    # ASCII run (English word, version like ``v0.86.0``, repo name like
+    # ``Aider-AI/aider``). Splitting mid-ASCII produced "Git com." in the
+    # 72s frame instead of "Git commit". When the natural cut point
+    # lands inside an ASCII run, walk back to the last whitespace / CJK
+    # character before the run started; if none exists, walk forward
+    # past the run.
+    def _safe_cut(chunk: str, hard_cap: int) -> int:
+        if hard_cap >= len(chunk):
+            return len(chunk)
+        cut = hard_cap
+        # If we're about to slice inside [A-Za-z0-9.-]+, slide.
+        in_ascii = lambda i: 0 <= i < len(chunk) and (
+            chunk[i].isascii() and (chunk[i].isalnum() or chunk[i] in ".-_/")
+        )
+        if in_ascii(cut - 1) and in_ascii(cut):
+            back = cut
+            while back > 0 and in_ascii(back - 1):
+                back -= 1
+            # back now sits at the start of the ASCII run
+            if back > 0:
+                return back
+            # ASCII run starts at index 0 — walk forward past it instead
+            fwd = cut
+            while fwd < len(chunk) and in_ascii(fwd):
+                fwd += 1
+            return min(fwd, len(chunk))
+        return cut
+
+    final: list[str] = []
+    for chunk in merged:
+        if len(chunk) <= MAX_CAPTION_CHARS:
+            final.append(chunk)
+            continue
+        offset = 0
+        while offset < len(chunk):
+            cap = offset + MAX_CAPTION_CHARS
+            cut = _safe_cut(chunk, cap)
+            if cut <= offset:
+                cut = min(offset + MAX_CAPTION_CHARS, len(chunk))
+            final.append(chunk[offset:cut])
+            offset = cut
+    return final
+
+
+def _align_caption_segments_to_whisperx(
+    segments: list[CaptionSegment],
+    alignment: Any,
+) -> list[CaptionSegment]:
+    """Re-time caption segments using WhisperX word timestamps so subtitles
+    track actual TTS pace instead of char-weighted estimate.
+
+    Why this exists: ``build_caption_segments`` distributes time uniformly
+    across the voiceover by char weight, but Doubao TTS does NOT speak at
+    uniform pace — Chinese commas pause briefly, em-dashes pause longer,
+    English brand names like ``ChatGPT`` / ``Aider`` take more time per
+    character than CJK syllables. Result on the Aider hook: caption
+    "...ChatGPT 粘代码" still on screen at 3.94s while voice is already
+    saying "复制回来" at 1.7s — ~2s subtitle drift, very obvious to the
+    viewer. WhisperX gives us word-level timestamps from the actual
+    rendered audio; this function maps caption chunks to those.
+
+    Algorithm: flatten alignment words into a per-char timeline (each char
+    inherits its parent word's time, evenly split). Strip non-content chars
+    (punctuation/whitespace) from each caption chunk. Take the next ``n``
+    chars from the timeline where ``n`` = chunk's content-char count;
+    assign chunk.start = first char start, chunk.end = last char end.
+
+    Failure modes:
+      * If alignment is empty / unusable, return segments unchanged.
+      * If chunk text exhausts before alignment chars, leftover chunks
+        keep their original timing — better than crashing.
+      * Char mismatches between caption and ASR (Aider→Aether,
+        44000→四万四千) drift gradually but each segment self-anchors to
+        cumulative char position, so a small mismatch in one chunk does
+        not cascade more than its own length.
+    """
+    timeline_starts: list[float] = []
+    timeline_ends: list[float] = []
+    try:
+        seg_iter = alignment.segments  # AlignmentResult dataclass
+    except AttributeError:
+        return segments
+
+    def _is_content(c: str) -> bool:
+        if c.isalnum():
+            return True
+        return "一" <= c <= "鿿"
+
+    for seg in seg_iter:
+        words = getattr(seg, "words", None) or []
+        for w in words:
+            word_text = getattr(w, "word", "") or ""
+            ws = float(getattr(w, "start", 0.0) or 0.0)
+            we = float(getattr(w, "end", ws) or ws)
+            if we <= ws:
+                we = ws + 0.05
+            content = [c for c in word_text if _is_content(c)]
+            if not content:
+                continue
+            per = (we - ws) / len(content)
+            for i, _c in enumerate(content):
+                timeline_starts.append(ws + i * per)
+                timeline_ends.append(ws + (i + 1) * per)
+
+    if not timeline_starts:
+        return segments
+
+    out: list[CaptionSegment] = []
+    pos = 0
+    total = len(timeline_starts)
+    last_end = timeline_ends[-1]
+    for seg in segments:
+        text_n = sum(1 for c in seg.text if _is_content(c))
+        if text_n == 0 or pos >= total:
+            out.append(seg)
+            continue
+        end_pos = min(pos + text_n, total)
+        new_start = timeline_starts[pos]
+        new_end = timeline_ends[end_pos - 1]
+        if new_end <= new_start:
+            new_end = new_start + max(0.4, seg.end - seg.start)
+        out.append(CaptionSegment(index=seg.index, start=new_start, end=new_end, text=seg.text))
+        pos = end_pos
+    # If the last subtitle ends well before audio's actual end (ASR may
+    # truncate trailing silence), stretch it so the final caption stays
+    # on screen until the audio actually stops.
+    if out and out[-1].end < last_end:
+        out[-1] = CaptionSegment(
+            index=out[-1].index,
+            start=out[-1].start,
+            end=last_end,
+            text=out[-1].text,
+        )
+    return out
+
+
 def build_caption_segments(sentences: list[str], duration_seconds: float) -> list[CaptionSegment]:
     if not sentences:
         return []
-    duration_seconds = max(duration_seconds, len(sentences) * 1.2)
-    weights = [max(1, len(sentence)) for sentence in sentences]
+    # Break long sentences into subtitle-friendly chunks BEFORE allocating
+    # time, so timing weights match what we'll actually display. We track
+    # which chunks belong to the same source sentence only for debugging
+    # — timing itself is purely proportional to chunk char weight.
+    chunked: list[str] = []
+    for sentence in sentences:
+        chunked.extend(_split_for_subtitle(sentence))
+    if not chunked:
+        return []
+
+    duration_seconds = max(duration_seconds, len(chunked) * 1.0)
+    weights = [max(1, len(chunk)) for chunk in chunked]
     total_weight = sum(weights)
     cursor = 0.0
     segments: list[CaptionSegment] = []
-    for index, (sentence, weight) in enumerate(zip(sentences, weights), start=1):
-        segment = max(1.2, duration_seconds * weight / total_weight)
+    for index, (chunk, weight) in enumerate(zip(chunked, weights), start=1):
+        # Cap each subtitle line at MAX_CAPTION_DURATION so even if one
+        # chunk is dense, the next subtitle still appears on schedule.
+        share = max(1.0, duration_seconds * weight / total_weight)
+        share = min(share, MAX_CAPTION_DURATION)
         start = cursor
-        end = duration_seconds if index == len(sentences) else min(duration_seconds, cursor + segment)
-        segments.append(CaptionSegment(index=index, start=start, end=end, text=sentence))
+        end = duration_seconds if index == len(chunked) else min(duration_seconds, cursor + share)
+        segments.append(CaptionSegment(index=index, start=start, end=end, text=chunk))
         cursor = end
     return segments
 
@@ -968,6 +2120,16 @@ def render_cover_image(cover_path: Path, brand_template: dict[str, Any], *, ffmp
 
 
 def select_visual_asset(writer: ArtifactWriter) -> Path | None:
+    browser_agent_assets = _read_json_if_exists(writer.output_path("browser_agent_assets.json"))
+    browser_assets = browser_agent_assets.get("assets") if isinstance(browser_agent_assets, dict) else None
+    if isinstance(browser_assets, list):
+        for asset in browser_assets:
+            if not isinstance(asset, dict):
+                continue
+            path = _existing_image_path(asset.get("workspace_path"))
+            if path and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                return path
+
     snapshot_status = _read_json_if_exists(writer.output_path("snapshot_status.json"))
     screenshots = snapshot_status.get("screenshots") if isinstance(snapshot_status, dict) else None
     if isinstance(screenshots, list):
@@ -987,7 +2149,206 @@ def select_visual_asset(writer: ArtifactWriter) -> Path | None:
             path = _existing_image_path(image.get("workspace_path"))
             if path and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
                 return path
+
+    # YouTube candidates have no GitHub-style screenshots, so fall back to
+    # the thumbnail / keyframes emitted by youtube_asset_collector.
+    youtube_assets = _read_json_if_exists(writer.output_path("youtube_assets.json"))
+    yt_assets = youtube_assets.get("assets") if isinstance(youtube_assets, dict) else None
+    if isinstance(yt_assets, list):
+        # Prefer the wide thumbnail as the hero card because keyframes are
+        # 16:9 and the hero card uses a 936x760 portrait crop that
+        # benefits from a composed frame.
+        sort_key = {"youtube_thumbnail": 0, "youtube_keyframe": 1}
+        for asset in sorted(
+            (a for a in yt_assets if isinstance(a, dict)),
+            key=lambda a: sort_key.get(str(a.get("role") or ""), 99),
+        ):
+            path = _existing_image_path(asset.get("workspace_path"))
+            if path and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                return path
     return None
+
+
+_BANNER_ASPECT_MAX = 4.0   # >4:1 horizontal banner → wordmark / shield row
+_BANNER_ASPECT_MIN = 0.25  # <1:4 vertical strip   → sidebar diagram / status bar
+_SVG_VIEWBOX_RE = re.compile(r"viewBox\s*=\s*[\"']\s*([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)", re.IGNORECASE)
+_SVG_WIDTH_RE = re.compile(r"\bwidth\s*=\s*[\"'](\d+(?:\.\d+)?)", re.IGNORECASE)
+_SVG_HEIGHT_RE = re.compile(r"\bheight\s*=\s*[\"'](\d+(?:\.\d+)?)", re.IGNORECASE)
+_SVG_FILL_RE = re.compile(r"fill\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+
+def _is_unusable_evidence_asset(path: Path) -> bool:
+    """Return True if the asset will render as garbage inside a chrome card.
+
+    Catches three failure modes seen in production:
+      1. **Wordmark SVG** — single-fill black-on-transparent path glyphs
+         (e.g. browser-use "Browser Use" 569×53 SVG, fill="#000"). On a
+         dark-tech chrome background the result is invisible.
+      2. **Banner aspect** — width / height ratio outside [0.25, 4.0].
+         GitHub README images at those ratios are almost always logo
+         stripes / shield rows / vertical sidebars, not real screenshots.
+      3. **Single-fill mono SVG** — even if aspect is OK, an SVG whose
+         only fill colour is a near-black or near-white solid is a
+         wordmark-style asset that won't read on the chrome card.
+
+    Returns False on any parse error so we degrade visibly rather than
+    silently dropping a valid image.
+    """
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".svg":
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            # Aspect from viewBox (preferred) or width/height attrs.
+            match = _SVG_VIEWBOX_RE.search(text)
+            w = h = None
+            if match:
+                _, _, w_raw, h_raw = match.groups()
+                try:
+                    w = float(w_raw)
+                    h = float(h_raw)
+                except ValueError:
+                    w = h = None
+            if w is None or h is None:
+                w_match = _SVG_WIDTH_RE.search(text)
+                h_match = _SVG_HEIGHT_RE.search(text)
+                if w_match and h_match:
+                    try:
+                        w = float(w_match.group(1))
+                        h = float(h_match.group(1))
+                    except ValueError:
+                        w = h = None
+            if w and h:
+                aspect = w / h
+                if aspect > _BANNER_ASPECT_MAX or aspect < _BANNER_ASPECT_MIN:
+                    return True
+            # Mono-fill check: gather all fill values, count near-black
+            # and near-white. If 80%+ of fills are mono, it's a wordmark.
+            fills = [_normalise_hex(f) for f in _SVG_FILL_RE.findall(text)]
+            fills = [f for f in fills if f]
+            if fills:
+                mono = sum(1 for f in fills if f in {"#000000", "#ffffff"})
+                if mono / len(fills) >= 0.8 and len(fills) <= 3:
+                    return True
+            return False
+        # Raster path: check aspect via Pillow.
+        try:
+            from PIL import Image
+        except ImportError:
+            return False
+        with Image.open(path) as img:
+            w_px, h_px = img.size
+            if not w_px or not h_px:
+                return False
+            aspect = w_px / h_px
+            if aspect > _BANNER_ASPECT_MAX or aspect < _BANNER_ASPECT_MIN:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _normalise_hex(value: str) -> str:
+    """Normalise a CSS colour token to lower-case 6-digit hex, or '' on parse failure."""
+    v = value.strip().lower()
+    if v.startswith("#"):
+        v = v[1:]
+        if len(v) == 3:
+            v = "".join(ch * 2 for ch in v)
+        if len(v) == 6 and all(ch in "0123456789abcdef" for ch in v):
+            return f"#{v}"
+    return ""
+
+
+def collect_visual_evidence_items(writer: ArtifactWriter) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    browser_agent_assets = _read_json_if_exists(writer.output_path("browser_agent_assets.json"))
+    browser_assets = browser_agent_assets.get("assets") if isinstance(browser_agent_assets, dict) else None
+    if isinstance(browser_assets, list):
+        for asset in browser_assets:
+            if not isinstance(asset, dict):
+                continue
+            path = _existing_image_path(asset.get("workspace_path"))
+            if path:
+                items.append(
+                    {
+                        "path": str(path),
+                        "label": str(asset.get("label") or "浏览器证据素材"),
+                        "role": str(asset.get("role") or "browser_evidence_screenshot"),
+                    }
+                )
+
+    # Local import to avoid a circular ``app.video_director`` ↔ ``app.media_producer``
+    # dependency at module import time.
+    from .video_director import _landscape_friendly_path
+
+    snapshot_status = _read_json_if_exists(writer.output_path("snapshot_status.json"))
+    screenshots = snapshot_status.get("screenshots") if isinstance(snapshot_status, dict) else None
+    if isinstance(screenshots, list):
+        for screenshot in screenshots:
+            if not isinstance(screenshot, dict):
+                continue
+            path = _existing_image_path(screenshot.get("workspace_path"))
+            if path:
+                # 同 video_director.collect_visual_assets：full_page 截图
+                # crop 成 hero 段，避免 16:9 ScreenshotFrame 黑边塌陷。
+                path = _landscape_friendly_path(path)
+                items.append(
+                    {
+                        "path": str(path),
+                        "label": str(screenshot.get("label") or "仓库截图"),
+                        "role": "repo_snapshot",
+                    }
+                )
+
+    readme_images = _read_json_if_exists(writer.output_path("readme_images.json"))
+    images = readme_images.get("images") if isinstance(readme_images, dict) else None
+    if isinstance(images, list):
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            path = _existing_image_path(image.get("workspace_path"))
+            # README 图片三道过滤：
+            # 1) 扩展名白名单
+            # 2) SVG < 8KB → shield 徽章
+            # 3) aspect > 4:1 / < 1:4 → wordmark / 长条 banner
+            # 4) SVG 主色单一（fill="#000" / fill="#fff" 占绝大多数）→
+            #    像 browser-use 的 "Browser Use" wordmark（569×53 / 纯黑），
+            #    丢进 dark-tech chrome 卡片是黑底黑字 = 完全不可见。
+            if path and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".svg"}:
+                try:
+                    if path.suffix.lower() == ".svg" and path.stat().st_size < 8000:
+                        continue
+                except OSError:
+                    continue
+                if _is_unusable_evidence_asset(path):
+                    continue
+                items.append(
+                    {
+                        "path": str(path),
+                        "label": str(image.get("alt") or image.get("label") or "README 素材"),
+                        "role": "readme_image",
+                    }
+                )
+
+    # YouTube-sourced candidates: thumbnail + evenly-distributed keyframes
+    # emitted by youtube_asset_collector.collect_youtube_assets.
+    youtube_assets = _read_json_if_exists(writer.output_path("youtube_assets.json"))
+    yt_assets = youtube_assets.get("assets") if isinstance(youtube_assets, dict) else None
+    if isinstance(yt_assets, list):
+        for asset in yt_assets:
+            if not isinstance(asset, dict):
+                continue
+            path = _existing_image_path(asset.get("workspace_path"))
+            if path and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                role = str(asset.get("role") or "youtube_keyframe")
+                items.append(
+                    {
+                        "path": str(path),
+                        "label": str(asset.get("label") or "视频画面"),
+                        "role": role,
+                    }
+                )
+    return items[:12]
 
 
 def prepare_visual_asset_card(source_path: Path | None, output_path: Path, *, ffmpeg: str) -> tuple[Path | None, dict[str, Any]]:

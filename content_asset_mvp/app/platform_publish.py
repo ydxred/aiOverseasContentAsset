@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .artifact_writer import stage_subdir
+
 
 PLATFORMS = {
     "douyin": {
@@ -83,16 +85,31 @@ REQUIRED_INPUTS = [
 
 LOW_CONFIDENCE_HINTS = ("low", "低", "metadata_only", "元数据", "缺乏转录")
 
+# Older analysis.json files (and any LLM run before the prompt fix) embed
+# internal alignment hints like ``(对应 key_moments[1])`` inside main_points
+# / facts_to_check entries. They were never meant for the audience but they
+# leak straight into the platform copy_block and look like a bug. Strip
+# them defensively so old archives keep producing publishable copy.
+_META_ANNOTATION_RE = re.compile(
+    r"\s*[(（]\s*对应\s*key[_\- ]?moments?\s*\[?\s*\d+\s*\]?\s*[)）]"
+)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
 
 def generate_platform_publish_package(content_id: str, package_dir: Path) -> dict[str, Any]:
-    meta = _read_json(package_dir / "meta.json")
-    analysis = _read_json(package_dir / "analysis.json") or _read_json(package_dir / "github_analysis.json")
-    risk_report = _read_json(package_dir / "risk_report.json")
-    quality_check = _read_json(package_dir / "quality_check.json")
-    publish_review = _read_json(package_dir / "publish_review.json")
-    render_status = _read_json(package_dir / "render_status.json")
-    director_plan = _read_json(package_dir / "director_plan.json")
-    script_text = _read_text(package_dir / "chinese_script.md")
+    # All inputs were moved into Tier B stage subdirs (00_source/, 01_analysis/,
+    # 02_script/, 08_qc/, 09_publish/) -- ``stage_subdir`` resolves them with a
+    # legacy flat fallback so half-migrated candidates still work.
+    meta = _read_json(stage_subdir(package_dir, "meta.json"))
+    analysis = _read_json(stage_subdir(package_dir, "analysis.json")) or _read_json(
+        stage_subdir(package_dir, "github_analysis.json")
+    )
+    risk_report = _read_json(stage_subdir(package_dir, "risk_report.json"))
+    quality_check = _read_json(stage_subdir(package_dir, "quality_check.json"))
+    publish_review = _read_json(stage_subdir(package_dir, "publish_review.json"))
+    render_status = _read_json(stage_subdir(package_dir, "render_status.json"))
+    director_plan = _read_json(stage_subdir(package_dir, "director_plan.json"))
+    script_text = _read_text(stage_subdir(package_dir, "chinese_script.md"))
 
     context = _build_context(content_id, meta, analysis, risk_report, quality_check, publish_review, render_status, script_text, director_plan)
     platforms = {platform: _build_platform_asset(platform, context) for platform in PLATFORMS}
@@ -121,7 +138,7 @@ def generate_platform_publish_packages_all(output_dir: Path) -> list[dict[str, A
     if not output_dir.exists():
         return results
     for package_dir in sorted(path for path in output_dir.iterdir() if path.is_dir()):
-        if not (package_dir / "final_video.mp4").exists():
+        if not stage_subdir(package_dir, "final_video.mp4").exists():
             continue
         results.append(generate_platform_publish_package(package_dir.name, package_dir))
     return results
@@ -141,13 +158,32 @@ def _build_context(
     script_title = _extract_section(script_text, "标题").splitlines()[0:1]
     title = _clean_text(script_title[0]) if script_title else ""
     title = title or _clean_text(str(meta.get("title") or analysis.get("core_topic") or content_id))
-    voiceover = _clean_text(str(director_plan.get("voiceover") or "")) or _extract_section(script_text, "口播稿")
-    summary = _first_sentence(voiceover) or _clean_text(str(analysis.get("summary") or ""))
-    main_points = _as_text_list(analysis.get("main_points"))
+    # ``voiceover`` keeps the original line breaks because we want
+    # ``_hook_paragraph`` to grab the script's lead paragraph (the actual
+    # hook) instead of the first 4-char rhetorical opener like "你相信吗？".
+    voiceover_raw = _strip_meta_annotations(
+        str(director_plan.get("voiceover") or "")
+    ) or _extract_section(script_text, "口播稿")
+    voiceover = _clean_text(voiceover_raw)
+    hook = _hook_paragraph(voiceover_raw, max_chars=130)
+    summary = hook or _strip_meta_annotations(
+        _clean_text(str(analysis.get("summary") or ""))
+    )
+    # main_points: 优先从 chinese_script.md 的核心三段（故事/它怎么做到/它还能干什么）
+    # 提炼，每段抽一句最能代表这段叙事的话。这把"轻量级本地代码代理"这种老
+    # analysis.main_points 文案从发布文案里挤出去——之前发布包跟成片完全两个故事。
+    # 只有当脚本三段都没拿到内容时才回落到 analysis.main_points。
+    script_main_points = _main_points_from_script(script_text)
+    if script_main_points:
+        main_points = script_main_points
+    else:
+        main_points = _as_text_list(analysis.get("main_points"))
     risks = _collect_risks(analysis, risk_report, quality_check, publish_review)
     needs_manual_check = _needs_manual_check(analysis, publish_review)
     source_name = str(meta.get("author") or meta.get("channel_title") or meta.get("full_name") or "")
     source_url = str(meta.get("source_url") or meta.get("webpage_url") or meta.get("html_url") or "")
+    topic_text = _clean_text(str(analysis.get("core_topic") or title))
+    hashtag_keywords = _resolve_hashtag_keywords(analysis, topic_text, main_points, meta)
     return {
         "content_id": content_id,
         "title": title,
@@ -164,7 +200,8 @@ def _build_context(
         "render_status": str(render_status.get("status") or "unknown"),
         "risk_pass": risk_report.get("pass"),
         "quality_pass": quality_check.get("pass"),
-        "topic": _clean_text(str(analysis.get("core_topic") or title)),
+        "topic": topic_text,
+        "hashtag_keywords": hashtag_keywords,
         "content_type": str(analysis.get("content_type") or ""),
         "director_style": str((director_plan.get("style") or {}).get("version") or ""),
     }
@@ -204,8 +241,13 @@ def _build_platform_asset(platform: str, context: dict[str, Any]) -> dict[str, A
 
 
 def _platform_title(platform: str, context: dict[str, Any]) -> str:
-    title = _trim(context["title"], 44)
+    raw_title = context["title"]
     topic = _trim(context["topic"], 28)
+    # B 站 / 其他中文短视频平台用 LLM 提炼的中文 topic 兜底，避免直接打英文原标
+    # （早期 chinese_script.md "# 标题" 段没填，``context["title"]`` 会回落到
+    # ``meta.title`` 的英文，看起来像 raw asset）。
+    chinese_title = raw_title if _is_mostly_chinese(raw_title) else context["topic"]
+    title = _trim(chinese_title, 44)
     content_type = context.get("content_type", "")
     if content_type == "ai_cli_agent":
         developer_angle = f"开发者为什么关注 {topic}？"
@@ -250,13 +292,137 @@ def _platform_description(platform: str, context: dict[str, Any]) -> str:
 
 
 def _platform_hashtags(platform: str, context: dict[str, Any]) -> list[str]:
-    tags = list(PLATFORMS[platform]["tag_seed"])
-    topic = re.sub(r"[^\w\u4e00-\u9fff]+", "", context["topic"])
-    if topic:
-        tags.insert(0, _trim(topic, 12))
+    # 优先用 LLM 给的 hashtag_keywords（每条 ≤6 字、不含 #/空格），
+    # 其次拼平台 tag_seed。从前面 5 个截掉，避免 hashtag 队列过长。
+    tags: list[str] = []
+    for kw in context.get("hashtag_keywords") or []:
+        cleaned = _normalize_hashtag(kw)
+        if cleaned and len(cleaned) <= 8:
+            tags.append(cleaned)
+    tags.extend(PLATFORMS[platform]["tag_seed"])
     if context["source_type"] == "github_repo":
         tags.append("GitHub")
-    return list(dict.fromkeys(tag for tag in tags if tag))[:6]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        if tag and tag not in seen:
+            seen.add(tag)
+            deduped.append(tag)
+    return deduped[:6]
+
+
+def _normalize_hashtag(value: str) -> str:
+    """Strip leading ``#`` and any whitespace/punct so the tag stays a single token."""
+    text = re.sub(r"^[#＃\s]+", "", str(value or ""))
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+
+
+# Common Chinese function words / connectors we don't want as standalone hashtags.
+_TOPIC_STOPWORDS: frozenset[str] = frozenset(
+    [
+        "的", "了", "和", "与", "在", "为", "对", "中", "上", "下", "及",
+        "以", "或", "而", "于", "等", "如", "是", "也", "都", "就", "把",
+        "向", "从", "到", "用", "给", "让", "被", "应用", "应用场景", "中的",
+        "中的应用", "趋势", "方向", "案例", "故事", "解读",
+    ]
+)
+
+
+def _resolve_hashtag_keywords(
+    analysis: dict[str, Any],
+    topic_text: str,
+    main_points: list[str],
+    meta: dict[str, Any],
+) -> list[str]:
+    """Return 3-5 short hashtag-friendly keywords.
+
+    Order of preference:
+      1. ``analysis.hashtag_keywords`` — once the LLM prompt update lands,
+         this is the authoritative list (per-topic, ≤6 chars each).
+      2. Tokens cut out of ``core_topic`` — drop stopwords / connector
+         characters, keep 2-6 char Chinese segments and any latin words.
+      3. Salient names from ``main_points`` (Peter, OpenClaw, Dropbox …).
+      4. Channel / author name from ``meta`` as a last-ditch token.
+    Anything that survives is normalised through ``_normalize_hashtag`` so
+    we never ship a tag containing whitespace or punctuation.
+    """
+    candidates: list[str] = []
+
+    raw = analysis.get("hashtag_keywords")
+    if isinstance(raw, list):
+        for kw in raw:
+            cleaned = _normalize_hashtag(str(kw))
+            if cleaned and len(cleaned) <= 8:
+                candidates.append(cleaned)
+
+    if not candidates:
+        candidates.extend(_split_topic_into_tokens(topic_text))
+        candidates.extend(_extract_proper_nouns(main_points))
+        for fallback in (
+            meta.get("channel_title"),
+            meta.get("author"),
+            meta.get("full_name"),
+        ):
+            token = _normalize_hashtag(str(fallback or ""))
+            if token and 2 <= len(token) <= 8:
+                candidates.append(token)
+                break
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in candidates:
+        if token and token not in seen and token not in _TOPIC_STOPWORDS:
+            seen.add(token)
+            deduped.append(token)
+        if len(deduped) >= 5:
+            break
+    return deduped
+
+
+# High-frequency Chinese tokens that read well as standalone hashtags.
+# When they appear inside ``core_topic`` we lift them out as their own tag,
+# instead of keeping the whole topic phrase as a single (then truncated)
+# hashtag.
+_TOPIC_KEYWORD_TOKENS: tuple[str, ...] = (
+    "AI Agent", "智能体", "自动化", "生产力", "效率工具",
+    "开源", "开发者", "工具链", "开源项目", "海外AI", "海外",
+    "趋势", "技术趋势", "项目笔记", "工具测评", "信息差",
+    "个人生活", "个人生产力", "操作系统", "终端", "命令行",
+    "Agent", "Copilot", "GitHub", "ChatGPT", "Claude",
+)
+
+
+def _split_topic_into_tokens(topic: str) -> list[str]:
+    """Cut a Chinese-mixed topic phrase into tag-sized fragments.
+
+    Strategy:
+      1. Pull out latin product / brand words (``AI``, ``GitHub``, ``Claude``).
+      2. Iterate ``_TOPIC_KEYWORD_TOKENS`` and lift each one out if it
+         appears as a substring — gives "AI 在个人生活自动化中的应用"
+         the tags ["AI", "个人生活", "自动化"].
+      3. Skip noise / connector chars; we never break Chinese into
+         arbitrary 2-grams since that often produces meaningless tags.
+    """
+    if not topic:
+        return []
+    tokens: list[str] = []
+    for latin in re.findall(r"[A-Za-z][A-Za-z0-9+.-]{0,7}", topic):
+        if 2 <= len(latin) <= 8:
+            tokens.append(latin)
+    for kw in _TOPIC_KEYWORD_TOKENS:
+        if kw in topic and kw not in tokens:
+            tokens.append(kw)
+    return tokens
+
+
+def _extract_proper_nouns(points: list[str]) -> list[str]:
+    """Pull product/person names (English camel case + capitalised words) out of main_points."""
+    nouns: list[str] = []
+    for point in points:
+        for match in re.findall(r"[A-Z][A-Za-z0-9]{1,15}", point):
+            if 2 <= len(match) <= 12:
+                nouns.append(match)
+    return nouns
 
 
 def _platform_cover_text(platform: str, context: dict[str, Any]) -> str:
@@ -439,10 +605,33 @@ def _needs_manual_check(analysis: dict[str, Any], publish_review: dict[str, Any]
 
 def _as_text_list(value: Any) -> list[str]:
     if isinstance(value, list):
-        return [_clean_text(str(item)) for item in value if _clean_text(str(item))]
+        return [
+            _strip_meta_annotations(_clean_text(str(item)))
+            for item in value
+            if _clean_text(str(item))
+        ]
     if isinstance(value, str) and value.strip():
-        return [_clean_text(value)]
+        return [_strip_meta_annotations(_clean_text(value))]
     return []
+
+
+def _strip_meta_annotations(text: str) -> str:
+    """Remove internal LLM alignment hints like ``(对应 key_moments[2])``."""
+    return _META_ANNOTATION_RE.sub("", text).rstrip(" 。.,;；、")
+
+
+def _is_mostly_chinese(text: str) -> bool:
+    """True when the title reads as a Chinese sentence (≥50% CJK chars).
+
+    Used to fall back to ``topic`` (which is always LLM-rewritten Chinese)
+    on platforms like Bilibili / Douyin where an English original title
+    looks alien next to the rest of the copy.
+    """
+    cleaned = re.sub(r"\s+", "", text)
+    if not cleaned:
+        return False
+    cjk = len(_CJK_RE.findall(cleaned))
+    return cjk * 2 >= len(cleaned)
 
 
 def _source_line(context: dict[str, Any]) -> str:
@@ -457,6 +646,70 @@ def _source_line(context: dict[str, Any]) -> str:
 def _first_sentence(text: str) -> str:
     match = re.search(r"[^。！？!?；;\n]+[。！？!?；;]?", text)
     return _clean_text(match.group(0)) if match else ""
+
+
+def _main_points_from_script(script_text: str) -> list[str]:
+    """Extract 3 narrative bullets from the canonical script's core sections.
+
+    Each section's first declarative sentence gets pulled — that's typically
+    the strongest factual claim of that section. We avoid grabbing the
+    section's last sentence (often a transitional "我们继续看...") and
+    bullet-list lines (those are 分镜建议 / 屏幕文字, not voiceover).
+
+    Returns at most 3 bullets, each ≤ 60 Chinese chars. Returns empty list
+    when the script doesn't have these sections — caller falls back to
+    analysis.main_points so we never ship blank descriptions.
+    """
+    if not script_text:
+        return []
+    section_titles = ("故事是怎么发生的", "它到底怎么做到的", "它还能干什么")
+    bullets: list[str] = []
+    for title in section_titles:
+        block = _extract_section(script_text, title)
+        if not block:
+            continue
+        # First non-bullet, non-heading sentence ≥ 8 chars.
+        for raw_line in block.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or line.startswith(("-", "*", "+", "•")):
+                continue
+            sentence = re.split(r"[。！？!?]", line)[0].strip()
+            if len(sentence) >= 8:
+                bullets.append(_clean_text(sentence)[:60])
+                break
+        if len(bullets) >= 3:
+            break
+    return bullets
+
+
+def _hook_paragraph(text: str, *, max_chars: int = 130) -> str:
+    """Return the script's lead paragraph (the hook), trimmed to ``max_chars``.
+
+    The previous ``_first_sentence`` would happily slice "你相信吗？Peter 在摩洛哥时
+    AI 自动修复了 bug" into just "你相信吗？" — losing every concrete fact in the
+    process. Platform descriptions then read like SEO filler. Instead we grab the
+    full first line / paragraph (which by convention in chinese_script.md is the
+    hook block, ~50–80 chars), and only fall back to a sentence-bounded cut when
+    the hook overruns ``max_chars``.
+    """
+    if not text:
+        return ""
+    # Split on the first blank line / line-break — the hook section is one
+    # paragraph by convention. ``str.split`` works regardless of platform-specific
+    # line endings since we already strip earlier.
+    first_block = re.split(r"\n\s*\n|\n", text, maxsplit=1)[0].strip()
+    first_block = _clean_text(first_block)
+    if not first_block:
+        return ""
+    if len(first_block) <= max_chars:
+        return first_block
+    cut = first_block[:max_chars]
+    # Prefer to break at a sentence terminator so we never end mid-clause.
+    for delim in "。！？!?":
+        idx = cut.rfind(delim)
+        if idx > max_chars * 0.4:
+            return cut[: idx + 1]
+    return _trim(first_block, max_chars)
 
 
 def _clean_text(text: str) -> str:

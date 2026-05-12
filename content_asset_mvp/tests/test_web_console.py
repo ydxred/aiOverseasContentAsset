@@ -318,6 +318,76 @@ def test_output_detail_contains_render_video_button(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_output_detail_contains_browser_agent_form(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    package_dir = output_dir / "demo"
+    package_dir.mkdir(parents=True)
+    (package_dir / "meta.json").write_text(json.dumps({"source_url": "https://github.com/example/repo"}, ensure_ascii=False), encoding="utf-8")
+    (package_dir / "browser_agent_status.json").write_text(
+        json.dumps(
+            {
+                "status": "standby",
+                "browser_use_available": False,
+                "active_capture_layer": "playwright",
+                "optional_agent_layer": "browser-use",
+                "screenshot_count": 0,
+                "blocking_reasons": ["browser-use package is not installed"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    server = build_server("127.0.0.1", 0)
+    server.output_dir = output_dir
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        with urlopen(f"http://{host}:{port}/outputs/demo", timeout=5) as response:
+            html = response.read().decode("utf-8")
+        assert "/browser-agent-report" in html
+        assert "浏览器研究助手" in html
+        assert "visual_evidence_hunt" in html
+        assert "mock 模式" in html
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_browser_agent_report_form_writes_report(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    workspace_dir = tmp_path / "workspace"
+    package_dir = output_dir / "demo"
+    package_dir.mkdir(parents=True)
+    (package_dir / "meta.json").write_text(json.dumps({"source_url": "https://github.com/example/repo"}, ensure_ascii=False), encoding="utf-8")
+
+    server = build_server("127.0.0.1", 0)
+    server.output_dir = output_dir
+    server.workspace_dir = workspace_dir
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        payload = urlencode(
+            {
+                "content_id": "demo",
+                "browser_agent_task": "visual_evidence_hunt",
+                "mock": "1",
+            }
+        ).encode("utf-8")
+        request = Request(f"http://{host}:{port}/browser-agent-report", data=payload, method="POST")
+        with urlopen(request, timeout=5) as response:
+            html = response.read().decode("utf-8")
+        report = json.loads((package_dir / "browser_agent_report.json").read_text(encoding="utf-8"))
+        assert report["status"] == "mocked"
+        assert report["task_id"] == "visual_evidence_hunt"
+        assert "browser_agent_report.json" in html
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_videos_page_renders_player_and_status(tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     package_dir = output_dir / "demo"

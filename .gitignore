@@ -6,6 +6,8 @@ __pycache__/
 *.env
 content_asset_mvp/.env
 
+.handoff/
+
 .venv/
 venv/
 content_asset_mvp/.venv/
@@ -31,3 +33,23 @@ content_asset_mvp/data/source_feedback_audit.json
 *.srt
 
 .DS_Store
+
+# Claude Code session state (don't commit any of it)
+.claude/
+
+# Large model/data archives that shouldn't live in repo
+nltk_data.zip
+*.tar.gz
+*.zip
+!project_packages/*.zip
+
+# Voice reference + cloning artifacts (sensitive — your voice)
+content_asset_mvp/workspace/voice_ref/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cursor rules — keep .mdc files versioned (these are project config)

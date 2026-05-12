@@ -42,36 +42,41 @@ def test_cli_candidate_id_generates_youtube_review_package(tmp_path: Path, monke
 
     assert exit_code == 0
     package_dir = output_dir / make_youtube_candidate_content_id(candidate)
-    for filename in [
-        "meta.json",
-        "youtube_candidate.json",
-        "youtube_transcript.json",
-        "transcript_clean.json",
-        "analysis.json",
-        "score.json",
-        "risk_report.json",
-        "chinese_script.md",
-        "quality_check.json",
-        "publish_review.json",
-        "media_job.json",
-        "distribution.json",
-        "feedback_template.json",
-        "review_notes.md",
-    ]:
-        assert (package_dir / filename).exists()
-    meta = json.loads((package_dir / "meta.json").read_text(encoding="utf-8"))
+    # The pipeline writes via ArtifactWriter which lays artifacts out under
+    # stage subdirectories (00_source / 01_analysis / 02_script /
+    # 09_publish), so we resolve each filename to its actual stage. This
+    # replaces the older flat-package_dir layout assertion.
+    expected_files = {
+        "meta.json": "00_source",
+        "youtube_candidate.json": "00_source",
+        "youtube_transcript.json": "00_source",
+        "transcript_clean.json": "00_source",
+        "analysis.json": "01_analysis",
+        "score.json": "01_analysis",
+        "risk_report.json": "01_analysis",
+        "quality_check.json": "01_analysis",
+        "chinese_script.md": "02_script",
+        "review_notes.md": "02_script",
+        "publish_review.json": "09_publish",
+        "media_job.json": "09_publish",
+        "distribution.json": "09_publish",
+        "feedback_template.json": "09_publish",
+    }
+    for filename, stage in expected_files.items():
+        assert (package_dir / stage / filename).exists(), f"missing {stage}/{filename}"
+    meta = json.loads((package_dir / "00_source" / "meta.json").read_text(encoding="utf-8"))
     assert meta["source_type"] == "youtube_video"
     assert meta["download_status"] == "metadata_only_candidate"
     assert meta["audio_path"] is None
-    transcript = json.loads((package_dir / "youtube_transcript.json").read_text(encoding="utf-8"))
+    transcript = json.loads((package_dir / "00_source" / "youtube_transcript.json").read_text(encoding="utf-8"))
     assert transcript["status"] == "skipped"
     assert transcript["reason"] == "mock_mode"
-    analysis = json.loads((package_dir / "analysis.json").read_text(encoding="utf-8"))
+    analysis = json.loads((package_dir / "01_analysis" / "analysis.json").read_text(encoding="utf-8"))
     assert analysis["analysis_basis"] == "metadata_only"
     assert analysis["factual_confidence"] == "low_metadata_only"
-    script = (package_dir / "chinese_script.md").read_text(encoding="utf-8")
+    script = (package_dir / "02_script" / "chinese_script.md").read_text(encoding="utf-8")
     assert "# 口播稿" in script
-    publish_review = json.loads((package_dir / "publish_review.json").read_text(encoding="utf-8"))
+    publish_review = json.loads((package_dir / "09_publish" / "publish_review.json").read_text(encoding="utf-8"))
     assert publish_review["status"] == "pending"
 
     updated = json.loads(candidate_path.read_text(encoding="utf-8"))["candidates"][0]
@@ -115,7 +120,7 @@ def test_web_candidate_package_button_and_route_generate_output(tmp_path: Path, 
         assert content_id in detail_html
         assert "youtube_transcript.json" in detail_html
         assert "transcript" in detail_html
-        assert (output_dir / content_id / "youtube_candidate.json").exists()
+        assert (output_dir / content_id / "00_source" / "youtube_candidate.json").exists()
 
         with urlopen(f"http://{host}:{port}/source-discovery", timeout=5) as response:
             html = response.read().decode("utf-8")
@@ -163,21 +168,22 @@ def test_cli_candidate_package_generates_generic_review_package(tmp_path: Path) 
 
     assert exit_code == 0
     package_dir = output_dir / make_generic_candidate_content_id(candidate)
-    for filename in [
-        "meta.json",
-        "generic_candidate.json",
-        "transcript_clean.json",
-        "analysis.json",
-        "score.json",
-        "risk_report.json",
-        "chinese_script.md",
-        "quality_check.json",
-        "publish_review.json",
-    ]:
-        assert (package_dir / filename).exists()
-    meta = json.loads((package_dir / "meta.json").read_text(encoding="utf-8"))
+    expected_files = {
+        "meta.json": "00_source",
+        "generic_candidate.json": "00_source",
+        "transcript_clean.json": "00_source",
+        "analysis.json": "01_analysis",
+        "score.json": "01_analysis",
+        "risk_report.json": "01_analysis",
+        "quality_check.json": "01_analysis",
+        "chinese_script.md": "02_script",
+        "publish_review.json": "09_publish",
+    }
+    for filename, stage in expected_files.items():
+        assert (package_dir / stage / filename).exists(), f"missing {stage}/{filename}"
+    meta = json.loads((package_dir / "00_source" / "meta.json").read_text(encoding="utf-8"))
     assert meta["source_type"] == "product_launch"
-    script = (package_dir / "chinese_script.md").read_text(encoding="utf-8")
+    script = (package_dir / "02_script" / "chinese_script.md").read_text(encoding="utf-8")
     assert "## 为什么突然值得关注" in script
 
 
@@ -260,8 +266,8 @@ def test_fetch_youtube_transcript_success_writes_clean_artifacts(tmp_path: Path,
     transcript = fetch_youtube_transcript(_youtube_candidate(), writer)
 
     assert transcript["status"] == "fetched"
-    saved = json.loads((writer.output_dir / "youtube_transcript.json").read_text(encoding="utf-8"))
-    cleaned = json.loads((writer.output_dir / "transcript_clean.json").read_text(encoding="utf-8"))
+    saved = json.loads((writer.output_dir / "00_source" / "youtube_transcript.json").read_text(encoding="utf-8"))
+    cleaned = json.loads((writer.output_dir / "00_source" / "transcript_clean.json").read_text(encoding="utf-8"))
     assert saved["segment_count"] == 2
     assert "factual basis" in cleaned["full_text"]
 
@@ -277,8 +283,8 @@ def test_fetch_youtube_transcript_failure_writes_error_artifacts(tmp_path: Path,
     transcript = fetch_youtube_transcript(_youtube_candidate(), writer)
 
     assert transcript["status"] == "error"
-    assert (writer.output_dir / "youtube_transcript.json").exists()
-    cleaned = json.loads((writer.output_dir / "transcript_clean.json").read_text(encoding="utf-8"))
+    assert (writer.output_dir / "00_source" / "youtube_transcript.json").exists()
+    cleaned = json.loads((writer.output_dir / "00_source" / "transcript_clean.json").read_text(encoding="utf-8"))
     assert cleaned["full_text"] == ""
 
 
@@ -305,7 +311,10 @@ def test_cli_auto_close_loop_mock_generates_summary_and_video(tmp_path: Path) ->
     )
 
     assert exit_code == 0
-    summaries = list(output_dir.glob("*/auto_run_summary.json"))
+    # ArtifactWriter writes ``auto_run_summary.json`` under the
+    # ``09_publish`` stage subdir; rglob covers both that layout and the
+    # legacy flat layout.
+    summaries = list(output_dir.rglob("auto_run_summary.json"))
     assert len(summaries) == 1
     summary = json.loads(summaries[0].read_text(encoding="utf-8"))
     assert summary["mock_discovery"] is True

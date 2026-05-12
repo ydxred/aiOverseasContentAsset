@@ -1,427 +1,476 @@
 sources:
-  - source_id: pieter_levels
-    source_type: creator
-    name: Pieter Levels / levelsio
-    category: indie_business
-    trust_score: 10
-    status: active
-    urls:
-      x: https://x.com/levelsio
-      website: https://levels.io/
-      projects: https://nomadlist.com/
-      github: https://github.com/levelsio
-    watch_keywords:
-      - levelsio
-      - Pieter Levels
-      - Photo AI
-      - Nomad List
-      - Remote OK
-    note: Serial solo founder with unusually clear build-in-public signals and profitable AI/product experiments.
-    priority: 10
-    discovery_method: Track X posts, project updates, interviews, and product launches.
-  - source_id: greg_isenberg
-    source_type: creator
-    name: Greg Isenberg
-    category: startup_ideas
-    trust_score: 9
-    status: active
-    urls:
-      x: https://x.com/gregisenberg
-      website: https://gregisenberg.com/
-      youtube: https://www.youtube.com/@gregisenberg
-      newsletter: https://latecheckout.substack.com/
-    watch_keywords:
-      - Greg Isenberg
-      - community business
-      - AI startup ideas
-    note: Strong source for community-led products, AI-native startup ideas, and opportunity teardown content; use as observation, not a playbook.
-    priority: 9
-    discovery_method: Watch YouTube interviews and X threads for repeatable startup patterns.
-  - source_id: rob_walling
-    source_type: creator
-    name: Rob Walling
-    category: bootstrapped_saas
-    trust_score: 9
-    status: active
-    urls:
-      x: https://x.com/robwalling
-      website: https://robwalling.com/
-      youtube: https://www.youtube.com/@robwalling
-      podcast: https://www.startupsfortherestofus.com/
-    watch_keywords:
-      - Rob Walling
-      - bootstrapped SaaS
-      - MicroConf
-    note: High-signal SaaS operator advice, founder case studies, pricing, churn, and growth.
-    priority: 9
-    discovery_method: Track YouTube, podcast notes, and MicroConf talks.
-  - source_id: yc_youtube
-    source_type: youtube_channel
-    name: Y Combinator
-    category: startup
-    trust_score: 9
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@ycombinator
-      website: https://www.ycombinator.com/
-    watch_keywords:
-      - founder stories
-      - product-market fit
-      - startup school
-    note: Startup lessons, founder stories, product-market fit.
-    priority: 8
-    discovery_method: Sort recent uploads and founder interviews.
-  - source_id: a16z_youtube
-    source_type: youtube_channel
-    name: a16z
-    category: venture_business
-    trust_score: 8
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@a16z
-      website: https://a16z.com/
-    watch_keywords:
-      - AI trends
-      - market map
-      - business models
-    note: Tech trends, AI, business models, market analysis.
-    priority: 7
-    discovery_method: Track thesis pieces and podcast clips.
-  - source_id: microconf_youtube
-    source_type: youtube_channel
-    name: MicroConf
-    category: micro_saas
-    trust_score: 8
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@MicroConf
-      website: https://microconf.com/
-    watch_keywords:
-      - micro SaaS
-      - bootstrapped SaaS
-      - indie founder growth
-    note: Bootstrapped SaaS, indie founder growth, pricing; useful for overseas AI startup case explainers.
-    priority: 8
-    discovery_method: Track founder talks and case studies.
-  - source_id: my_first_million_youtube
-    source_type: youtube_channel
-    name: My First Million
-    category: business_ideas
-    trust_score: 8
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@MyFirstMillionPod
-    watch_keywords:
-      - business ideas
-      - market gaps
-      - founder discussion
-    note: Business ideas, market gaps, founder discussion for AI opportunity observation.
-    priority: 7
-    discovery_method: Scan recent idea episodes and guest names.
-  - source_id: starter_story_youtube
-    source_type: youtube_channel
-    name: Starter Story
-    category: founder_case_study
-    trust_score: 7
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@StarterStory
-      website: https://www.starterstory.com/
-    watch_keywords:
-      - founder case study
-      - online business
-      - niche business
-    note: Founder case studies and niche business stories; keep source boundaries and avoid copying paths.
-    priority: 6
-    discovery_method: Mine profitable niche business stories.
-  - source_id: tk_kader_youtube
-    source_type: youtube_channel
-    name: TK Kader
-    category: b2b_saas
-    trust_score: 7
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@TKKader
-    watch_keywords:
-      - B2B SaaS
-      - positioning
-      - sales
-    note: B2B SaaS go-to-market, positioning, sales.
-    priority: 5
-    discovery_method: Track tactical SaaS growth videos.
-  - source_id: fireship_youtube
-    source_type: youtube_channel
-    name: Fireship
-    category: developer_trends
-    trust_score: 8
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@Fireship
-    watch_keywords:
-      - developer tools
-      - frameworks
-      - AI coding
-    note: Fast developer trend explainers, tools, frameworks.
-    priority: 6
-    discovery_method: Use for fast-moving developer trend detection.
-  - source_id: theo_youtube
-    source_type: youtube_channel
-    name: Theo - t3.gg
-    category: developer_opinion
-    trust_score: 7
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@t3dotgg
-    watch_keywords:
-      - developer tools
-      - web dev
-      - platform shifts
-    note: Developer tools, web dev opinions, platform shifts.
-    priority: 5
-    discovery_method: Scan for controversial tool changes and developer sentiment.
-  - source_id: all_about_ai_youtube
-    source_type: youtube_channel
-    name: All About AI
-    category: ai_tools
-    trust_score: 7
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@AllAboutAI
-    watch_keywords:
-      - AI agents
-      - automation workflow
-      - local LLM
-    note: AI agent workflows, automation, practical demos for tool/CLI explainers.
-    priority: 6
-    discovery_method: Track practical AI workflow demos.
-  - source_id: matt_wolfe_youtube
-    source_type: youtube_channel
-    name: Matt Wolfe
-    category: ai_tools
-    trust_score: 7
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@mreflow
-    watch_keywords:
-      - AI tools
-      - weekly AI news
-      - content automation
-    note: AI tools, weekly AI updates, practical tool discovery.
-    priority: 6
-    discovery_method: Use weekly summaries to discover tools for deeper validation.
-  - source_id: two_minute_papers_youtube
-    source_type: youtube_channel
-    name: Two Minute Papers
-    category: ai_research
-    trust_score: 8
-    status: active
-    urls:
-      youtube: https://www.youtube.com/@TwoMinutePapers
-    watch_keywords:
-      - AI research
-      - generative AI
-      - paper explained
-    note: AI research explained in accessible language.
-    priority: 5
-    discovery_method: Use as early signal, then validate with original papers or products.
-  - source_id: openai_github
-    source_type: github_org
-    name: OpenAI GitHub
-    category: ai_engineering
-    trust_score: 9
-    status: active
-    urls:
-      github: https://github.com/openai
-    watch_keywords:
-      - OpenAI SDK
-      - agents
-      - evals
-    note: Official source for OpenAI developer tooling and examples.
-    priority: 8
-    discovery_method: Watch recently updated repositories and releases.
-  - source_id: vercel_github
-    source_type: github_org
-    name: Vercel GitHub
-    category: developer_tools
-    trust_score: 8
-    status: active
-    urls:
-      github: https://github.com/vercel
-    watch_keywords:
-      - AI SDK
-      - Next.js
-      - web developer tools
-    note: Useful for AI app patterns, frontend infra, and launchable developer tools.
-    priority: 7
-    discovery_method: Track popular repos and changelog-worthy releases.
-  - source_id: github_trending_ai
-    source_type: github_trending
-    name: GitHub Trending AI
-    category: ai_projects
-    trust_score: 8
-    status: active
-    urls:
-      trending: https://github.com/trending/python?since=daily
-      search: https://github.com/search?q=AI+agent+stars%3A%3E500&type=repositories&s=updated&o=desc
-    watch_keywords:
-      - AI agent
-      - LLM app
-      - coding assistant
-    note: Detects fast-rising open-source AI tools suitable for Chinese project explainers.
-    priority: 9
-    discovery_method: Check daily trending and updated high-star AI repositories.
-  - source_id: product_hunt
-    source_type: product_hunt
-    name: Product Hunt
-    category: new_tools
-    trust_score: 7
-    status: active
-    urls:
-      website: https://www.producthunt.com/
-      ai: https://www.producthunt.com/categories/artificial-intelligence
-    watch_keywords:
-      - AI tools
-      - no-code
-      - productivity
-    note: New products, launch trends, Product Hunt AI tool discovery.
-    priority: 8
-    discovery_method: Scan daily launches and comments for early adoption signals.
-  - source_id: latent_space_podcast
-    source_type: newsletter
-    name: Latent Space
-    category: ai_engineering
-    trust_score: 8
-    status: active
-    urls:
-      website: https://www.latent.space/
-      newsletter: https://www.latent.space/
-    watch_keywords:
-      - AI engineering
-      - agents
-      - inference
-    note: AI engineering interviews and technical trend analysis.
-    priority: 7
-    discovery_method: Track technical interviews for durable AI engineering topics.
-  - source_id: indie_hackers
-    source_type: community
-    name: Indie Hackers
-    category: indie_business
-    trust_score: 8
-    status: active
-    urls:
-      website: https://www.indiehackers.com/
-    watch_keywords:
-      - indie founder
-      - revenue
-      - bootstrapped
-    note: Indie business stories and founder discussions; use revenue mentions only as context requiring verification.
-    priority: 8
-    discovery_method: Mine revenue stories and forum discussions.
-  - source_id: hacker_news
-    source_type: community
-    name: Hacker News
-    category: tech_trends
-    trust_score: 8
-    status: active
-    urls:
-      website: https://news.ycombinator.com/
-      newest: https://news.ycombinator.com/newest
-    watch_keywords:
-      - Show HN
-      - Launch HN
-      - AI
-    note: Early tech discussions and developer sentiment.
-    priority: 8
-    discovery_method: Watch Show HN and Launch HN threads for authentic developer reactions.
-  - source_id: yc_blog
-    source_type: blog
-    name: Y Combinator Blog
-    category: startup
-    trust_score: 9
-    status: active
-    urls:
-      website: https://www.ycombinator.com/blog
-    watch_keywords:
-      - YC
-      - startup advice
-      - founder lessons
-    note: Founder advice and startup trend essays from YC.
-    priority: 7
-    discovery_method: Track new essays and batch-related trend posts.
-  - source_id: a16z_blog
-    source_type: blog
-    name: a16z Blog
-    category: venture_business
-    trust_score: 8
-    status: active
-    urls:
-      website: https://a16z.com/
-    watch_keywords:
-      - AI
-      - marketplaces
-      - consumer
-      - infrastructure
-    note: Market thesis content useful for trend framing.
-    priority: 6
-    discovery_method: Validate against products and founder examples before production.
-  - source_id: ai_agent_workflow_keyword
-    source_type: keyword
-    name: AI Agent Workflow
-    category: ai_agents
-    trust_score: 7
-    status: active
-    urls: {}
-    watch_keywords:
-      - AI agent workflow for solo founders
-      - micro SaaS built with AI
-      - n8n AI automation business
-    note: Keyword source for repeatable solo-founder AI workflow content.
-    priority: 8
-    discovery_method: Generate GitHub, YouTube, and Google searches from keyword sets.
-  - source_id: github_ai_project_keyword
-    source_type: keyword
-    name: GitHub AI Project Discovery
-    category: ai_projects
-    trust_score: 7
-    status: active
-    urls: {}
-    watch_keywords:
-      - AI agent framework language:Python stars:>1000
-      - LLM developer tools stars:>500
-      - AI coding assistant stars:>500
-    note: Keyword source for finding open-source AI projects suitable for GitHub explainers.
-    priority: 9
-    discovery_method: Generate GitHub search links and validate repository activity.
-
+- source_id: pieter_levels
+  source_type: creator
+  name: Pieter Levels / levelsio
+  category: indie_business
+  trust_score: 10
+  status: active
+  urls:
+    x: https://x.com/levelsio
+    website: https://levels.io/
+    projects: https://nomadlist.com/
+    github: https://github.com/levelsio
+  watch_keywords:
+  - levelsio
+  - Pieter Levels
+  - Photo AI
+  - Nomad List
+  - Remote OK
+  note: Serial solo founder with unusually clear build-in-public signals and profitable
+    AI/product experiments.
+  priority: 10
+  discovery_method: Track X posts, project updates, interviews, and product launches.
+- source_id: greg_isenberg
+  source_type: creator
+  name: Greg Isenberg
+  category: startup_ideas
+  trust_score: 9
+  status: active
+  urls:
+    x: https://x.com/gregisenberg
+    website: https://gregisenberg.com/
+    youtube: https://www.youtube.com/@gregisenberg
+    newsletter: https://latecheckout.substack.com/
+  watch_keywords:
+  - Greg Isenberg
+  - community business
+  - AI startup ideas
+  note: Strong source for community-led products, AI-native startup ideas, and opportunity
+    teardown content; use as observation, not a playbook.
+  priority: 9
+  discovery_method: Watch YouTube interviews and X threads for repeatable startup
+    patterns.
+- source_id: rob_walling
+  source_type: creator
+  name: Rob Walling
+  category: bootstrapped_saas
+  trust_score: 9
+  status: active
+  urls:
+    x: https://x.com/robwalling
+    website: https://robwalling.com/
+    youtube: https://www.youtube.com/@robwalling
+    podcast: https://www.startupsfortherestofus.com/
+  watch_keywords:
+  - Rob Walling
+  - bootstrapped SaaS
+  - MicroConf
+  note: High-signal SaaS operator advice, founder case studies, pricing, churn, and
+    growth.
+  priority: 9
+  discovery_method: Track YouTube, podcast notes, and MicroConf talks.
+- source_id: yc_youtube
+  source_type: youtube_channel
+  name: Y Combinator
+  category: startup
+  trust_score: 9
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@ycombinator
+    website: https://www.ycombinator.com/
+  watch_keywords:
+  - founder stories
+  - product-market fit
+  - startup school
+  note: Startup lessons, founder stories, product-market fit.
+  priority: 8
+  discovery_method: Sort recent uploads and founder interviews.
+- source_id: a16z_youtube
+  source_type: youtube_channel
+  name: a16z
+  category: venture_business
+  trust_score: 8
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@a16z
+    website: https://a16z.com/
+  watch_keywords:
+  - AI trends
+  - market map
+  - business models
+  note: Tech trends, AI, business models, market analysis.
+  priority: 7
+  discovery_method: Track thesis pieces and podcast clips.
+- source_id: microconf_youtube
+  source_type: youtube_channel
+  name: MicroConf
+  category: micro_saas
+  trust_score: 8
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@MicroConf
+    website: https://microconf.com/
+  watch_keywords:
+  - micro SaaS
+  - bootstrapped SaaS
+  - indie founder growth
+  note: Bootstrapped SaaS, indie founder growth, pricing; useful for overseas AI startup
+    case explainers.
+  priority: 8
+  discovery_method: Track founder talks and case studies.
+- source_id: my_first_million_youtube
+  source_type: youtube_channel
+  name: My First Million
+  category: business_ideas
+  trust_score: 8
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@MyFirstMillionPod
+  watch_keywords:
+  - business ideas
+  - market gaps
+  - founder discussion
+  note: Business ideas, market gaps, founder discussion for AI opportunity observation.
+  priority: 7
+  discovery_method: Scan recent idea episodes and guest names.
+- source_id: starter_story_youtube
+  source_type: youtube_channel
+  name: Starter Story
+  category: founder_case_study
+  trust_score: 7
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@StarterStory
+    website: https://www.starterstory.com/
+  watch_keywords:
+  - founder case study
+  - online business
+  - niche business
+  note: Founder case studies and niche business stories; keep source boundaries and
+    avoid copying paths.
+  priority: 6
+  discovery_method: Mine profitable niche business stories.
+- source_id: tk_kader_youtube
+  source_type: youtube_channel
+  name: TK Kader
+  category: b2b_saas
+  trust_score: 7
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@TKKader
+  watch_keywords:
+  - B2B SaaS
+  - positioning
+  - sales
+  note: B2B SaaS go-to-market, positioning, sales.
+  priority: 5
+  discovery_method: Track tactical SaaS growth videos.
+- source_id: fireship_youtube
+  source_type: youtube_channel
+  name: Fireship
+  category: developer_trends
+  trust_score: 8
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@Fireship
+  watch_keywords:
+  - developer tools
+  - frameworks
+  - AI coding
+  note: Fast developer trend explainers, tools, frameworks.
+  priority: 6
+  discovery_method: Use for fast-moving developer trend detection.
+- source_id: theo_youtube
+  source_type: youtube_channel
+  name: Theo - t3.gg
+  category: developer_opinion
+  trust_score: 7
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@t3dotgg
+  watch_keywords:
+  - developer tools
+  - web dev
+  - platform shifts
+  note: Developer tools, web dev opinions, platform shifts.
+  priority: 5
+  discovery_method: Scan for controversial tool changes and developer sentiment.
+- source_id: all_about_ai_youtube
+  source_type: youtube_channel
+  name: All About AI
+  category: ai_tools
+  trust_score: 7
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@AllAboutAI
+  watch_keywords:
+  - AI agents
+  - automation workflow
+  - local LLM
+  note: AI agent workflows, automation, practical demos for tool/CLI explainers.
+  priority: 6
+  discovery_method: Track practical AI workflow demos.
+- source_id: matt_wolfe_youtube
+  source_type: youtube_channel
+  name: Matt Wolfe
+  category: ai_tools
+  trust_score: 7
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@mreflow
+  watch_keywords:
+  - AI tools
+  - weekly AI news
+  - content automation
+  note: AI tools, weekly AI updates, practical tool discovery.
+  priority: 6
+  discovery_method: Use weekly summaries to discover tools for deeper validation.
+- source_id: two_minute_papers_youtube
+  source_type: youtube_channel
+  name: Two Minute Papers
+  category: ai_research
+  trust_score: 8
+  status: active
+  urls:
+    youtube: https://www.youtube.com/@TwoMinutePapers
+  watch_keywords:
+  - AI research
+  - generative AI
+  - paper explained
+  note: AI research explained in accessible language.
+  priority: 5
+  discovery_method: Use as early signal, then validate with original papers or products.
+- source_id: openai_github
+  source_type: github_org
+  name: OpenAI GitHub
+  category: ai_engineering
+  trust_score: 9
+  status: active
+  urls:
+    github: https://github.com/openai
+  watch_keywords:
+  - OpenAI SDK
+  - agents
+  - evals
+  note: Official source for OpenAI developer tooling and examples.
+  priority: 8
+  discovery_method: Watch recently updated repositories and releases.
+- source_id: vercel_github
+  source_type: github_org
+  name: Vercel GitHub
+  category: developer_tools
+  trust_score: 8
+  status: active
+  urls:
+    github: https://github.com/vercel
+  watch_keywords:
+  - AI SDK
+  - Next.js
+  - web developer tools
+  note: Useful for AI app patterns, frontend infra, and launchable developer tools.
+  priority: 7
+  discovery_method: Track popular repos and changelog-worthy releases.
+- source_id: github_trending_ai
+  source_type: github_trending
+  name: GitHub Trending AI
+  category: ai_projects
+  trust_score: 8
+  status: active
+  urls:
+    trending: https://github.com/trending/python?since=daily
+    search: https://github.com/search?q=AI+agent+stars%3A%3E500&type=repositories&s=updated&o=desc
+  watch_keywords:
+  - AI agent
+  - LLM app
+  - coding assistant
+  note: Detects fast-rising open-source AI tools suitable for Chinese project explainers.
+  priority: 9
+  discovery_method: Check daily trending and updated high-star AI repositories.
+- source_id: product_hunt
+  source_type: product_hunt
+  name: Product Hunt
+  category: new_tools
+  trust_score: 7
+  status: active
+  urls:
+    website: https://www.producthunt.com/
+    ai: https://www.producthunt.com/categories/artificial-intelligence
+  watch_keywords:
+  - AI tools
+  - no-code
+  - productivity
+  note: New products, launch trends, Product Hunt AI tool discovery.
+  priority: 8
+  discovery_method: Scan daily launches and comments for early adoption signals.
+- source_id: latent_space_podcast
+  source_type: newsletter
+  name: Latent Space
+  category: ai_engineering
+  trust_score: 8
+  status: active
+  urls:
+    website: https://www.latent.space/
+    newsletter: https://www.latent.space/
+  watch_keywords:
+  - AI engineering
+  - agents
+  - inference
+  note: AI engineering interviews and technical trend analysis.
+  priority: 7
+  discovery_method: Track technical interviews for durable AI engineering topics.
+- source_id: indie_hackers
+  source_type: community
+  name: Indie Hackers
+  category: indie_business
+  trust_score: 8
+  status: active
+  urls:
+    website: https://www.indiehackers.com/
+  watch_keywords:
+  - indie founder
+  - revenue
+  - bootstrapped
+  note: Indie business stories and founder discussions; use revenue mentions only
+    as context requiring verification.
+  priority: 8
+  discovery_method: Mine revenue stories and forum discussions.
+- source_id: hacker_news
+  source_type: community
+  name: Hacker News
+  category: tech_trends
+  trust_score: 8
+  status: active
+  urls:
+    website: https://news.ycombinator.com/
+    newest: https://news.ycombinator.com/newest
+  watch_keywords:
+  - Show HN
+  - Launch HN
+  - AI
+  note: Early tech discussions and developer sentiment.
+  priority: 8
+  discovery_method: Watch Show HN and Launch HN threads for authentic developer reactions.
+- source_id: yc_blog
+  source_type: blog
+  name: Y Combinator Blog
+  category: startup
+  trust_score: 9
+  status: active
+  urls:
+    website: https://www.ycombinator.com/blog
+  watch_keywords:
+  - YC
+  - startup advice
+  - founder lessons
+  note: Founder advice and startup trend essays from YC.
+  priority: 7
+  discovery_method: Track new essays and batch-related trend posts.
+- source_id: a16z_blog
+  source_type: blog
+  name: a16z Blog
+  category: venture_business
+  trust_score: 8
+  status: active
+  urls:
+    website: https://a16z.com/
+  watch_keywords:
+  - AI
+  - marketplaces
+  - consumer
+  - infrastructure
+  note: Market thesis content useful for trend framing.
+  priority: 6
+  discovery_method: Validate against products and founder examples before production.
+- source_id: ai_agent_workflow_keyword
+  source_type: keyword
+  name: AI Agent Workflow
+  category: ai_agents
+  trust_score: 7
+  status: active
+  urls: {}
+  watch_keywords:
+  - AI agent workflow for solo founders
+  - micro SaaS built with AI
+  - n8n AI automation business
+  note: Keyword source for repeatable solo-founder AI workflow content.
+  priority: 8
+  discovery_method: Generate GitHub, YouTube, and Google searches from keyword sets.
+- source_id: github_ai_project_keyword
+  source_type: keyword
+  name: GitHub AI Project Discovery
+  category: ai_projects
+  trust_score: 7
+  status: active
+  urls: {}
+  watch_keywords:
+  - AI agent framework language:Python stars:>1000
+  - LLM developer tools stars:>500
+  - AI coding assistant stars:>500
+  note: Keyword source for finding open-source AI projects suitable for GitHub explainers.
+  priority: 9
+  discovery_method: Generate GitHub search links and validate repository activity.
+- source_id: src_crewaiinc_crewai_8d29f5b8fd
+  source_type: github_repo
+  name: crewAIInc/crewAI
+  category: ai_projects
+  trust_score: 8
+  status: active
+  urls:
+    github: https://github.com/crewAIInc/crewAI
+  watch_keywords:
+  - crewAIInc/crewAI
+  - github_ai_project_keyword
+  note: Framework for orchestrating role-playing, autonomous AI agents. By fostering
+    collaborative intelligence, CrewAI empowers agents to work together seamlessly,
+    tackling complex tasks.
+  priority: 10
+  discovery_method: Approved candidate from GitHub AI Project Discovery via Generate
+    GitHub search links and validate repository activity..
+  url: https://github.com/crewAIInc/crewAI
+- source_id: src_ai_agent_framework_1000_practical_ai_workf_0123fcb88d
+  source_type: youtube_video
+  name: AI agent framework 1000 - practical AI workflow demo
+  category: ai_projects
+  trust_score: 8
+  status: active
+  urls:
+    youtube: https://www.youtube.com/watch?v=mock_a75b79f2
+  watch_keywords:
+  - AI agent framework 1000 - practical AI workflow demo
+  - github_ai_project_keyword
+  - AI agent framework 1000
+  - AI workflow demo
+  - youtube
+  - AI
+  - coding
+  - creator
+  - business
+  - productivity
+  - AI agent framework language:Python stars:>1000
+  - LLM developer tools stars:>500
+  - AI coding assistant stars:>500
+  note: Mock YouTube video discovered from 'AI agent framework 1000'.
+  priority: 10
+  discovery_method: Approved candidate from GitHub AI Project Discovery via mock.
+  url: https://www.youtube.com/watch?v=mock_a75b79f2
 search_queries:
-  - query: AI agent workflow for solo founders
-    category: ai_agents
-    reason: 容易找到国内还没讲透的个人创业 AI 流程。
-  - query: micro SaaS built with AI
-    category: micro_saas
-    reason: 适合做海外小产品案例拆解。
-  - query: n8n AI automation business
-    category: automation_business
-    reason: 适合转成中文 AI 工具观察和工作流拆解内容。
-  - query: Make.com AI agent workflow
-    category: automation_business
-    reason: 自动化工具和 AI agent 结合，中文内容缺系统拆解。
-  - query: solo founder AI startup ideas
-    category: startup_ideas
-    reason: 适合选题库和 AI 商业机会拆解。
-  - query: bootstrapped SaaS growth case study
-    category: saas_growth
-    reason: 适合做 B2B SaaS 增长案例。
-  - query: AI tools for content operations
-    category: ai_content_ops
-    reason: 能直接连接当前系统的目标用户。
-  - query: productized service automation
-    category: service_business
-    reason: 海外服务产品化案例较多，国内可重构。
-  - query: founder builds in public AI tool
-    category: founder_story
-    reason: 适合做故事型短视频和图文。
-  - query: small business AI automation case study
-    category: small_business_ai
-    reason: 有商业启发，适合中文用户理解但不做结果承诺。
-
+- query: AI agent workflow for solo founders
+  category: ai_agents
+  reason: 容易找到国内还没讲透的个人创业 AI 流程。
+- query: micro SaaS built with AI
+  category: micro_saas
+  reason: 适合做海外小产品案例拆解。
+- query: n8n AI automation business
+  category: automation_business
+  reason: 适合转成中文 AI 工具观察和工作流拆解内容。
+- query: Make.com AI agent workflow
+  category: automation_business
+  reason: 自动化工具和 AI agent 结合，中文内容缺系统拆解。
+- query: solo founder AI startup ideas
+  category: startup_ideas
+  reason: 适合选题库和 AI 商业机会拆解。
+- query: bootstrapped SaaS growth case study
+  category: saas_growth
+  reason: 适合做 B2B SaaS 增长案例。
+- query: AI tools for content operations
+  category: ai_content_ops
+  reason: 能直接连接当前系统的目标用户。
+- query: productized service automation
+  category: service_business
+  reason: 海外服务产品化案例较多，国内可重构。
+- query: founder builds in public AI tool
+  category: founder_story
+  reason: 适合做故事型短视频和图文。
+- query: small business AI automation case study
+  category: small_business_ai
+  reason: 有商业启发，适合中文用户理解但不做结果承诺。

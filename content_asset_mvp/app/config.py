@@ -35,6 +35,9 @@ class Settings:
     qwen_api_key: str | None
     ark_api_key: str | None
     ark_model: str | None
+    volc_appid: str | None
+    volc_access_token: str | None
+    volc_secret_key: str | None
 
     def ensure_directories(self) -> None:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +72,9 @@ def load_settings(
         qwen_api_key=os.getenv("QWEN_API_KEY") or None,
         ark_api_key=os.getenv("ARK_API_KEY") or None,
         ark_model=os.getenv("ARK_MODEL") or None,
+        volc_appid=os.getenv("VOLC_APPID") or None,
+        volc_access_token=os.getenv("VOLC_ACCESS_TOKEN") or None,
+        volc_secret_key=os.getenv("VOLC_SECRET_KEY") or None,
     )
     settings.ensure_directories()
     return settings

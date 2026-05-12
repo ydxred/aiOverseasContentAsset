@@ -10,6 +10,7 @@ from typing import Any
 
 from .analyzer import analyze_content
 from .artifact_writer import ArtifactWriter
+from .browser_agent import BROWSER_AGENT_TASKS, run_browser_agent_report
 from .cleaner import clean_transcript
 from .config import load_settings
 from .db import Database
@@ -39,6 +40,7 @@ from .source_review import approve_candidate, archive_candidate, reject_candidat
 from .snapshotter import snapshot_github_repo
 from .transcriber import transcribe
 from .youtube_analyzer import analyze_youtube_candidate, build_youtube_candidate_meta, make_youtube_candidate_content_id
+from .youtube_asset_collector import collect_youtube_assets
 from .youtube_transcript import fetch_youtube_transcript
 
 
@@ -81,6 +83,46 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock", action="store_true", help="Force mock mode")
     parser.add_argument("--render-video", help="Render final video from output/{content_id}/chinese_script.md and exit")
     parser.add_argument("--video-mock", action="store_true", help="Force offline TTS fallback while rendering video")
+    parser.add_argument(
+        "--render-portrait",
+        action="store_true",
+        help=(
+            "Also render a 9:16 (1080x1920) version into final_video_portrait.mp4. "
+            "By default only the 16:9 main cut is produced — pass this flag when you "
+            "need a native vertical for Douyin/视频号 that can't tolerate letterbox."
+        ),
+    )
+    parser.add_argument(
+        "--draft",
+        action="store_true",
+        help=(
+            "Draft preview mode: render at 540p / 24fps with x264 ultrafast. "
+            "Trades visual fidelity (~50% bitrate, slight aliasing) for ~60% "
+            "shorter render time. Use during shot/subtitle iteration; switch "
+            "to default release mode (1080p / 30fps / medium) before publishing."
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "Disable the per-stage incremental cache (TTS / audio mastering / "
+            "word-level alignment / subtitle translation). Forces every stage "
+            "to re-run from scratch. Use when you want a clean re-render or "
+            "suspect a cached artifact has gone bad."
+        ),
+    )
+    parser.add_argument(
+        "--render-landscape",
+        action="store_true",
+        help=(
+            "DEPRECATED. 16:9 is now the default main cut (final_video.mp4). "
+            "This flag is a silent no-op kept for scripts that still pass it."
+        ),
+    )
+    parser.add_argument("--browser-agent-report", help="Run a read-only browser agent report for an existing output package and exit")
+    parser.add_argument("--browser-agent-task", choices=sorted(BROWSER_AGENT_TASKS), default="source_page_research", help="Browser agent task to run")
+    parser.add_argument("--browser-agent-max-steps", type=int, help="Maximum browser-use agent steps for one report")
     parser.add_argument(
         "--bilingual-subtitles",
         action=argparse.BooleanOptionalAction,
@@ -201,6 +243,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if args.render_video:
         return _render_video(args, settings, db)
+
+    if args.browser_agent_report:
+        return _browser_agent_report(args, settings)
 
     if args.review_package:
         return _review_package(args, settings)
@@ -344,6 +389,25 @@ def _run_github_pipeline(github_url: str, writer: ArtifactWriter, llm: LLMClient
     )
     db.record_artifact(content_id, "snapshot_status", str(writer.output_path("snapshot_status.json")))
 
+    # Visual evidence hunt: capture 8 focused screenshots per repo (overview /
+    # demos / quickstart / CLI / releases / issues / contributors / commits).
+    # Without this, codex-style repos with image-light READMEs end up with
+    # exactly 1 usable screenshot for the entire video — the root cause of
+    # the "one image stretched across 3 minutes" problem. Mock mode skips it
+    # because Playwright isn't expected to be available there.
+    if not mock:
+        try:
+            evidence_report = run_browser_agent_report(
+                source_url=meta.get("html_url") or github_url,
+                writer=writer,
+                task_id="visual_evidence_hunt",
+                max_steps=None,
+            )
+            asset_count = int(evidence_report.get("browser_agent_asset_count") or 0)
+            print(f"[visual_evidence_hunt] captured {asset_count} focused screenshots")
+        except Exception as exc:  # pragma: no cover - depends on Playwright env
+            print(f"[visual_evidence_hunt] skipped due to: {exc}")
+
     readme_markdown = writer.output_path("readme.md").read_text(encoding="utf-8")
     readme_images = writer.read_json("readme_images.json")
     analysis = analyze_github_project(meta, readme_markdown, readme_images, snapshot_status, writer, llm, db)
@@ -473,6 +537,9 @@ def describe_auto_candidate_selection(candidate: dict[str, Any]) -> str:
     )
 
 
+_AUTO_VISUAL_CAPACITY_FLOOR = 4
+
+
 def _is_auto_processable_candidate(candidate: dict[str, Any]) -> bool:
     source_type = str(candidate.get("source_type") or "")
     status = str(candidate.get("status") or "new")
@@ -481,7 +548,19 @@ def _is_auto_processable_candidate(candidate: dict[str, Any]) -> bool:
         return False
     if status not in AUTO_PROCESSABLE_STATUSES:
         return False
-    return decision in AUTO_DECISION_PRIORITY
+    if decision not in AUTO_DECISION_PRIORITY:
+        return False
+    # Hard gate: never auto-process candidates whose surface only supports
+    # 1-3 distinct visual assets. The score gate already reflects this in
+    # the decision band (the 40-min talking-head case lands in ``review``),
+    # but ``review`` is still inside ``AUTO_DECISION_PRIORITY``, so a thin
+    # candidate would still render — producing the very "60 shots, one
+    # face" video this gate exists to prevent. We require an explicit
+    # human approval (``approve_candidate``) to override.
+    capacity = candidate.get("visual_capacity_estimate")
+    if isinstance(capacity, int) and capacity < _AUTO_VISUAL_CAPACITY_FLOOR:
+        return decision == "approve_candidate"
+    return True
 
 
 def _auto_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, int, int, str]:
@@ -536,6 +615,18 @@ def _run_youtube_candidate_pipeline(
     transcript_clean = writer.read_json("transcript_clean.json")
 
     analysis = analyze_youtube_candidate(meta, candidate, transcript_clean, transcript_status, writer, llm, db)
+    # Collect real visual assets (thumbnail + keyframes) so the Remotion
+    # compositor stops rendering empty placeholders for YouTube sources.
+    # Runs after analysis so the voiceover/script can inform future asset
+    # selection heuristics, but before media_producer which consumes the
+    # youtube_assets.json index.
+    youtube_asset_status = collect_youtube_assets(meta, writer, mock=mock)
+    db.record_artifact(content_id, "youtube_assets", str(writer.output_path("youtube_assets.json")))
+    logger.info(
+        "YouTube visual assets collected status=%s assets=%d",
+        youtube_asset_status.get("status"),
+        len(youtube_asset_status.get("assets", []) or []),
+    )
     score = score_topic(analysis, writer)
     db.record_artifact(content_id, "score", str(writer.output_path("score.json")))
     risk_report = check_risk(meta, analysis, writer, llm, db)
@@ -571,6 +662,26 @@ def _run_generic_candidate_pipeline(
     db.record_artifact(content_id, "generic_candidate", str(writer.output_path("generic_candidate.json")))
     db.record_artifact(content_id, "transcript_clean", str(writer.output_path("transcript_clean.json")))
     transcript_clean = writer.read_json("transcript_clean.json")
+
+    # Creator-portrait sources (creator_link / creator_project) need their
+    # canonical URLs (X profile / personal site / project landings)
+    # captured as portrait evidence — without this the PortraitCard /
+    # ProjectPortfolioGrid templates fall back to letter-only avatars.
+    # Triggered by source_type or by ``signals.creator_urls`` carrying the
+    # full url dict from sources.yaml.
+    src_type = str(meta.get("source_type") or "").strip()
+    if src_type in {"creator_link", "creator_project", "creator"}:
+        from .snapshotter import snapshot_creator_profile
+        signals = candidate.get("signals") if isinstance(candidate.get("signals"), dict) else {}
+        creator_urls = signals.get("creator_urls") if isinstance(signals.get("creator_urls"), dict) else None
+        if not creator_urls:
+            # Fall back to the candidate's own URL — at minimum capture that.
+            creator_urls = {"creator_url": str(meta.get("source_url") or candidate.get("url") or "")}
+        try:
+            snapshot_creator_profile(creator_urls, writer)
+            db.record_artifact(content_id, "snapshot_status", str(writer.output_path("snapshot_status.json")))
+        except Exception as exc:  # don't kill the whole pipeline if Playwright trips
+            logger.warning("snapshot_creator_profile skipped: %s", exc)
 
     analysis = analyze_content(meta, transcript_clean, writer, llm, db)
     score = score_topic(analysis, writer)
@@ -629,7 +740,29 @@ def _rerun_stage(stage: str, writer: ArtifactWriter, llm: LLMClient, db: Databas
 
     if stage == "analysis":
         transcript_clean = writer.read_json("transcript_clean.json")
-        analyze_content(meta, transcript_clean, writer, llm, db)
+        # YouTube candidates have a dedicated analyzer with the
+        # transcript-grounded prompt + key_moments schema. The generic
+        # ``analyze_content`` path uses the older ``analysis`` task that
+        # never asks for key_moments — calling it here for a YouTube
+        # rerun silently drops every fix in this PR. Detect via
+        # source_type in meta.json and route accordingly.
+        source_type = str(meta.get("source_type") or "")
+        if source_type.startswith("youtube"):
+            transcript_status_path = writer.output_path("transcript_status.json")
+            transcript_status = (
+                writer.read_json("transcript_status.json")
+                if transcript_status_path.exists()
+                else {"status": "ok", "language": transcript_clean.get("language")}
+            )
+            candidate_path = writer.output_path("candidate_metadata.json")
+            candidate = (
+                writer.read_json("candidate_metadata.json")
+                if candidate_path.exists()
+                else {}
+            )
+            analyze_youtube_candidate(meta, candidate, transcript_clean, transcript_status, writer, llm, db)
+        else:
+            analyze_content(meta, transcript_clean, writer, llm, db)
         return 0
     if stage == "score":
         score_topic(analysis, writer)
@@ -655,8 +788,14 @@ def _render_video(args: argparse.Namespace, settings: object, db: Database) -> i
         content_id,
         writer,
         openai_api_key=settings.openai_api_key,
+        qwen_api_key=settings.qwen_api_key,
+        volc_appid=settings.volc_appid,
+        volc_access_token=settings.volc_access_token,
         force_mock=args.video_mock or settings.mock,
         bilingual_subtitles=args.bilingual_subtitles,
+        render_portrait=getattr(args, "render_portrait", False),
+        quality_tier="draft" if getattr(args, "draft", False) else "release",
+        use_cache=not getattr(args, "no_cache", False),
     )
     media_job = result.as_media_job()
     db.record_media_job(content_id, media_job)
@@ -680,6 +819,41 @@ def _render_video(args: argparse.Namespace, settings: object, db: Database) -> i
     ]:
         db.record_artifact(content_id, artifact_type, str(writer.output_path(filename)))
     print(f"Video rendered: {result.video_path}")
+    return 0
+
+
+def _browser_agent_report(args: argparse.Namespace, settings: object) -> int:
+    content_id = str(args.browser_agent_report)
+    if not CONTENT_ID_RE.fullmatch(content_id):
+        raise SystemExit("Invalid --browser-agent-report content id")
+    package_dir = settings.output_dir / content_id
+    if not package_dir.exists():
+        raise SystemExit(f"Output package not found: {content_id}")
+    writer = ArtifactWriter(settings.output_dir, settings.workspace_dir, content_id)
+    meta_path = writer.output_path("meta.json")
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    else:
+        meta = {}
+    source_url = str(meta.get("html_url") or meta.get("webpage_url") or meta.get("source_url") or "")
+    if args.browser_agent_task == "web_console_smoke":
+        source_url = "http://127.0.0.1:8001/"
+    if not source_url:
+        raise SystemExit("Source URL not found in meta.json; cannot run browser agent report")
+    report = run_browser_agent_report(
+        source_url=source_url,
+        writer=writer,
+        task_id=args.browser_agent_task,
+        mock=settings.mock,
+        max_steps=args.browser_agent_max_steps,
+    )
+    print(
+        "Browser agent report generated: "
+        f"content_id={content_id} "
+        f"task={report['task_id']} "
+        f"status={report['status']} "
+        f"path={writer.output_path('browser_agent_report.json')}"
+    )
     return 0
 
 
@@ -893,7 +1067,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run_pipeline(args)
     except Exception as exc:
+        import traceback
         print(f"Pipeline failed: {exc}", file=sys.stderr)
+        traceback.print_exc()
         return 1
 
 

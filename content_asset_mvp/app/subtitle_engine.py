@@ -71,33 +71,53 @@ def _shot_for_time(shots: Any, start: float, fallback_index: int) -> dict[str, A
 
 
 def _highlight_words(text: str, shot: dict[str, Any]) -> list[str]:
+    """Pick keywords that should be color-highlighted in the burned subtitle.
+
+    Source priority (topic-agnostic):
+      1. ``shot["subtitle_keywords"]`` — populated by ``video_director`` from
+         the actual scene voiceover. These are real Chinese / English brand
+         tokens (e.g. ``"Codex"``, ``"npm"``, ``"AI Agent"``) and are the
+         only safe source.
+      2. ``shot["screen_text"]`` — split on `` / `` since director writes
+         e.g. ``"浏览器 / 文件 / API"``. Only kept if the resulting tokens
+         actually appear in ``text``.
+      3. Nothing — return [] rather than emitting layout enums.
+
+    **Hard contract**: every returned word MUST appear as a substring of
+    ``text``. Previously we were leaking ``visual_type`` enum truncations
+    like ``"impact_t"`` / ``"top_thir"`` / ``"keyword_"`` into highlight_words,
+    none of which exist in the cue text — Remotion's regex never matched,
+    so the entire pipeline silently shipped white-only subtitles for months.
+    """
     candidates: list[str] = []
-    for key in ("highlight", "screen_text", "title", "visual_type"):
-        value = shot.get(key)
-        if isinstance(value, str):
-            candidates.extend(_tokenize_highlight(value))
-        elif isinstance(value, list):
-            candidates.extend(str(item) for item in value if item)
-    if not candidates:
-        candidates = _tokenize_highlight(text)
+    raw_keywords = shot.get("subtitle_keywords")
+    if isinstance(raw_keywords, list):
+        candidates.extend(str(item) for item in raw_keywords if item)
+    elif isinstance(raw_keywords, tuple):
+        candidates.extend(str(item) for item in raw_keywords if item)
+
+    screen_text = shot.get("screen_text")
+    if isinstance(screen_text, str) and screen_text:
+        candidates.extend(part.strip() for part in screen_text.replace("/", " / ").split(" / ") if part.strip())
+
     seen: set[str] = set()
     words: list[str] = []
     for word in candidates:
-        word = word.strip()
-        if len(word) < 2 or word in seen:
+        word = word.strip(" ,.。！？!?:：;；()[]{}「」『』")
+        if len(word) < 2 or len(word) > 16:
+            continue
+        if word in seen:
+            continue
+        # Hard contract: keyword must actually appear in the cue text. Otherwise
+        # Remotion's regex won't match and the highlight is invisible — better
+        # to drop the keyword than to silently noop.
+        if word not in text:
             continue
         seen.add(word)
-        words.append(word[:16])
-        if len(words) >= 4:
+        words.append(word)
+        if len(words) >= 3:
             break
     return words
-
-
-def _tokenize_highlight(value: str) -> list[str]:
-    tokens = [part.strip(" ,.。！？!?:：;；()[]{}") for part in value.replace("/", " ").split()]
-    if len(tokens) > 1:
-        return [token for token in tokens if token]
-    return [value.strip()[:8]] if value.strip() else []
 
 
 def _subtitle_style(shot: dict[str, Any], default_style: str) -> str:

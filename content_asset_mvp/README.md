@@ -104,6 +104,7 @@ github_meta.json
 readme.md
 readme_images.json
 snapshot_status.json
+browser_agent_status.json
 github_analysis.json
 chinese_script.md
 title_options.md
@@ -113,6 +114,14 @@ review_notes.md
 如果 GitHub API 限流或没有 token，系统会在 `github_meta.json` 的 `api_errors` 中记录原因，并尽量降级使用 raw README。可选配置 `GITHUB_TOKEN` 提高公共 API 限额。
 
 截图能力是可选增强：如果没有安装 Playwright 或本机浏览器不可用，GitHub 主链路不会失败，会写出 `snapshot_status.json`，状态为 `skipped` 并说明原因。
+
+浏览器智能代理是可选增强层，不替代 Chromium/Playwright。GitHub snapshot 阶段会写出 `browser_agent_status.json`，说明 `browser-use` 是否已安装、是否具备可用 API key，以及推荐的只读研究任务。已有输出包可以手动生成浏览器研究报告：
+
+```bash
+python -m app.main --browser-agent-report "<content_id>" --browser-agent-task source_page_research
+```
+
+可选任务包括 `source_page_research`、`visual_evidence_hunt`、`web_console_smoke`。使用 `--mock` 时不会打开浏览器，只生成计划和状态报告。
 
 自动源发现 mock 命令：
 

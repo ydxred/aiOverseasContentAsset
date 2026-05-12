@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "name": "AI Lab Terminal",
+  "tagline": "给 AI 开发者看的 AI 工具科普视频",
+  "audience": "AI 开发者 / ML 工程师 / 关注开源 AI 的产品人",
+  "core_principles": [
+    "视觉锚点 = 开发者每天看的界面（GitHub Dark / Jupyter / Terminal / VSCode）",
+    "符号系统取自代码语言（cell id / variable assignment / assert / traceback / git diff），不是装饰图形",
+    "整片视觉一致性 = 一个 notebook / 一次实验",
+    "信息密度高但不焦虑：靠等宽字体 + 暗背景达到信息流稳态"
+  ],
+  "color_system": {
+    "background": {
+      "base": "#0E1116",
+      "deep": "#070A0F",
+      "panel": "#161B22",
+      "panel_soft": "rgba(22,27,34,0.78)"
+    },
+    "primary": {
+      "name": "CRT 绿",
+      "hex": "#5EFF8F",
+      "usage": "主标题 / 关键词 / Variable name / 终端 prompt"
+    },
+    "secondary": {
+      "name": "电气紫",
+      "hex": "#B388FF",
+      "usage": "副高亮 / Definition bar / Attention 强调"
+    },
+    "warning": {
+      "name": "暖橙",
+      "hex": "#FF9E5C",
+      "usage": "Stack trace / 警示 / Assertion failed"
+    },
+    "diff_add": "#3FB950",
+    "diff_del": "#F85149",
+    "neutral": {
+      "text": "#E6EDF3",
+      "text_soft": "#B1BAC4",
+      "muted": "#7D8590",
+      "comment": "#8B949E"
+    },
+    "rules": [
+      "纯黑底，绝不用蓝色调（避免和参考视频/廉价 AI 工具撞）",
+      "三主色一次只用一种为主，另两种作为点缀",
+      "中性文本始终是 GitHub Dark 同款灰白系"
+    ]
+  },
+  "typography": {
+    "mono_font": "JetBrains Mono, Fira Code, ui-monospace, monospace",
+    "ui_font": "Inter, 'Source Han Sans SC', 'Noto Sans SC', sans-serif",
+    "rules": [
+      "所有英文/数字/代码符号 → mono",
+      "所有中文标题 → ui_font Heavy",
+      "字幕中文 → ui_font Bold",
+      "板块名（cell id / section）→ mono"
+    ]
+  },
+  "global_layers": {
+    "tech_backdrop": {
+      "components": [
+        {
+          "name": "base_dark",
+          "color": "#0E1116"
+        },
+        {
+          "name": "notebook_grid",
+          "type": "thin grid",
+          "spacing_px": 64,
+          "color": "rgba(125,133,144,0.06)",
+          "purpose": "传递 notebook cell 感，不抢戏"
+        },
+        {
+          "name": "tensor_drift",
+          "type": "floating mono text",
+          "samples": [
+            "x.shape = (1, 768, 32, 32)",
+            "loss = 0.234",
+            "attention[0,5,:,:]",
+            "grad_norm = 1.7e-3",
+            "lr_scheduler.step()",
+            "with torch.no_grad():",
+            "model.eval()",
+            "tokenizer.encode(prompt)",
+            "[INFO] step 1240 / 5000",
+            "embed_dim=4096",
+            "RoPE(theta=10000)",
+            "FlashAttention-2"
+          ],
+          "opacity": 0.07,
+          "color": "#5EFF8F",
+          "drift_speed_px_per_sec": 8,
+          "purpose": "极弱的运动锚点，避免静止 PPT 感"
+        },
+        {
+          "name": "vignette",
+          "type": "radial gradient",
+          "purpose": "四角加暗，把视线推到中央"
+        }
+      ]
+    },
+    "section_label": {
+      "format_options": [
+        "In [{n:02d}]: {chinese_name}",
+        "# %% {chinese_name}",
+        "§ {n}.{sub} {chinese_name}",
+        "$ analyze --topic {chinese_name}"
+      ],
+      "default_format": "In [{n:02d}]: {chinese_name}",
+      "color": "#5EFF8F",
+      "size_ratio": 0.025,
+      "position": "top-left of shot, 56px inset",
+      "rules": [
+        "镜头序号自动递增（00, 01, 02...）",
+        "不是装饰，是真实的板块标识",
+        "所有镜头都有，构成一致性"
+      ]
+    },
+    "shot_transition": {
+      "type": "cell-collapse + fade",
+      "duration_s": 0.45,
+      "easing": "ease-out",
+      "rules": [
+        "禁用硬切",
+        "新镜头进入：opacity 0→1 + translateY 24→0",
+        "旧镜头退出：opacity 1→0 + scale 1→0.97"
+      ]
+    }
+  },
+  "shot_templates": [
+    {
+      "id": "definition_card",
+      "replaces": "impact_title_card",
+      "structure": "Jupyter markdown cell 风：左侧粗紫 bar (8px) + 一句标题 + 一段补充",
+      "header_format": "# Definition",
+      "primary_color": "secondary"
+    },
+    {
+      "id": "variable_spotlight",
+      "replaces": "keyword_punch_card",
+      "structure": "Python 变量赋值大字：KEY_INSIGHT = \"...\"，赋值符号绿色高亮",
+      "header_format": "In [{n:02d}]:",
+      "primary_color": "primary"
+    },
+    {
+      "id": "assertion_card",
+      "replaces": "judgement_card",
+      "structure": "assert <judgement>, '<reason>'，断言风的观点表达",
+      "header_format": "# %% Assertion",
+      "primary_color": "secondary",
+      "accent_color": "warning"
+    },
+    {
+      "id": "repo_view",
+      "replaces": "repo_full_bleed",
+      "structure": "macOS 终端 chrome (红黄绿圆点 + 路径标题) + 全屏截图 + 底部 caption bar",
+      "header_format": "$ open repo",
+      "chrome_title": "github.com/{owner}/{name}"
+    },
+    {
+      "id": "evidence_zoom",
+      "replaces": "repo_evidence_zoom",
+      "structure": "终端 chrome + 缩放截图 + 紫色高亮框 + 闪烁光标指向焦点",
+      "header_format": "# Evidence",
+      "chrome_title": "evidence: {role}"
+    },
+    {
+      "id": "browser_view",
+      "replaces": "browser_focus",
+      "structure": "终端 chrome (替换为浏览器风) + 缩放截图 + caption",
+      "header_format": "$ browse {role}",
+      "chrome_title": "{role} → focus"
+    },
+    {
+      "id": "readme_cell",
+      "replaces": "readme_visual_card",
+      "structure": "Jupyter markdown cell：标题 + 截图 + caption，整体在 cell 框内",
+      "header_format": "# %% README",
+      "chrome": "jupyter_cell"
+    },
+    {
+      "id": "stack_trace_card",
+      "new": true,
+      "structure": "橙色 Traceback 文本块：'Traceback (most recent call last):' 风格，逐行展开错误",
+      "header_format": "! Traceback",
+      "primary_color": "warning"
+    },
+    {
+      "id": "diff_card",
+      "new": true,
+      "structure": "git diff 视图：- 红色（旧/坑）/ + 绿色（新/对）行级对比",
+      "header_format": "$ git diff",
+      "primary_color": "diff"
+    }
+  ],
+  "subtitle": {
+    "font": "ui_font Bold",
+    "color": "#E6EDF3",
+    "background": "rgba(14,17,22,0.72)",
+    "highlight_color": "#5EFF8F",
+    "rules": [
+      "字幕背景半透明黑，不用蓝色调",
+      "高亮词用 CRT 绿，不是黄"
+    ]
+  },
+  "differentiation_from_reference": [
+    "底色：黑石墨 vs 深蓝 → 摆脱'AI 廉价感'",
+    "主色：CRT 绿+紫+橙 vs 黄+绿+红 → 完全不同的色彩印象",
+    "等宽字体 vs 通用无衬线 → 一眼能看出'给开发者的'",
+    "Jupyter cell id vs 英文 ALL CAPS → 实验室感 vs 商务感",
+    "Stack trace 模板 vs 红弹窗 → 真实开发场景 vs 拟物 UI",
+    "git diff 模板 vs 左右对照 → 程序员母语 vs 通用对比",
+    "终端 chrome vs 浮动徽章 → 把截图变'被引用的证据'"
+  ]
+}

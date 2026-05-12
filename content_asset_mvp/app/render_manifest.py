@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .artifact_writer import stage_subdir
+
 
 def build_v6_render_manifest(
     *,
@@ -34,7 +36,7 @@ def build_v6_render_manifest(
         "shot_list_path": str(shot_list_path),
         "quality_report_path": str(quality_report_path),
         "outputs": outputs,
-        "remotion_status_path": str(output_dir / "remotion_status.json"),
-        "audio_mastering_status_path": str(output_dir / "audio_mastering_status.json"),
-        "visual_qc_report_path": str(output_dir / "visual_qc_report.json"),
+        "remotion_status_path": str(stage_subdir(output_dir, "remotion_status.json")),
+        "audio_mastering_status_path": str(stage_subdir(output_dir, "audio_mastering_status.json")),
+        "visual_qc_report_path": str(stage_subdir(output_dir, "visual_qc_report.json")),
     }
